@@ -2,30 +2,28 @@
   "name": "siyuan-linker",
   "author": "steve",
   "url": "https://github.com/mixyoung/siyuan-linker",
-  "version": "0.3.0",
-  "minAppVersion": "3.0.12",
+  "version": "0.3.1",
+  "minAppVersion": "3.8.2",
   "backends": [
     "all"
   ],
   "frontends": [
     "desktop",
-    "mobile",
-    "browser-desktop",
-    "browser-mobile",
     "desktop-window"
   ],
   "displayName": {
-    "en_US": "SiYuan Linker",
-    "zh_CN": "SiYuan Linker"
+    "default": "SiYuan Linker",
+    "zh-CN": "SiYuan Linker"
   },
   "description": {
-    "en_US": "Transfer notes and workspace data between local and remote SiYuan instances.",
-    "zh_CN": "在本地与远程思源笔记服务之间传输笔记和工作空间数据。"
+    "default": "Transfer notes and workspace data between local and remote SiYuan instances.",
+    "zh-CN": "在本地与远程思源笔记服务之间传输笔记和工作空间数据。"
   },
   "readme": {
-    "en_US": "README_en_US.md",
-    "zh_CN": "README.md"
+    "default": "README_en_US.md",
+    "zh-CN": "README.md"
   },
+  "disabledInPublish": true,
   "funding": {
     "custom": [
       ""

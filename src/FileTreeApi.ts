@@ -1,4 +1,4 @@
-import type { TargetConnection } from "./myapi";
+import { listNotebooks as listNotebookData, requestJson, type TargetConnection } from "./siyuan-api";
 
 export interface NotebookOption {
     id: string;
@@ -17,38 +17,8 @@ export interface FileTreeNode {
     loading: boolean;
 }
 
-type SiYuanResponse<T> = {
-    code: number;
-    msg?: string;
-    data: T;
-};
-
-const request = async <T>(target: TargetConnection, path: string, body: unknown): Promise<T> => {
-    const response = await fetch(`${target.url}${path}`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `token ${target.token}`,
-        },
-        body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status} ${response.statusText}`);
-    }
-    const result = await response.json() as SiYuanResponse<T>;
-    if (result.code !== 0) {
-        throw new Error(result.msg || `SiYuan error ${result.code}`);
-    }
-    return result.data;
-};
-
 export async function listNotebooks(target: TargetConnection): Promise<NotebookOption[]> {
-    const data = await request<{ notebooks: NotebookOption[] }>(
-        target,
-        "/api/notebook/lsNotebooks",
-        {},
-    );
-    return data.notebooks;
+    return (await listNotebookData(target)).map(({ id, name }) => ({ id, name }));
 }
 
 export async function listDocuments(
@@ -56,33 +26,40 @@ export async function listDocuments(
     notebookId: string,
     path = "/",
 ): Promise<FileTreeNode[]> {
-    const data = await request<{
-        box: string;
-        files: Array<{
-            id: string;
-            path: string;
-            name: string;
-            subFileCount: number;
-            hidden?: boolean;
-        }>;
-    }>(target, "/api/filetree/listDocsByPath", {
+    const data = await requestJson<unknown>("/api/filetree/listDocsByPath", {
         notebook: notebookId,
         path,
         maxListCount: 0,
         flashcard: false,
-    });
+    }, "List documents", target);
 
-    return data.files
-        .filter((file) => !file.hidden)
-        .map((file) => ({
-            box: data.box || notebookId,
-            id: file.id,
-            path: file.path,
-            name: file.name.replace(/\.sy$/, ""),
-            hasChildren: file.subFileCount > 0,
+    if (!data || typeof data !== "object") throw new Error("List documents: invalid response");
+    const value = data as Record<string, unknown>;
+    if (!Array.isArray(value.files)) throw new Error("List documents: invalid file list");
+    const box = typeof value.box === "string" && value.box ? value.box : notebookId;
+
+    return value.files
+        .map((file) => {
+            if (!file || typeof file !== "object") throw new Error("List documents: invalid document entry");
+            const item = file as Record<string, unknown>;
+            if (typeof item.id !== "string" || typeof item.path !== "string" || typeof item.name !== "string") {
+                throw new Error("List documents: invalid document entry");
+            }
+            const subFileCount = typeof item.subFileCount === "number" ? item.subFileCount : 0;
+            return { item, subFileCount };
+        })
+        .filter(({ item }) => item.hidden !== true)
+        .map(({ item, subFileCount }) => ({
+            box,
+            id: item.id as string,
+            path: item.path as string,
+            name: (item.name as string).replace(/\.sy$/, ""),
+            hasChildren: subFileCount > 0,
             children: [],
             expanded: false,
-            loaded: file.subFileCount === 0,
+            loaded: subFileCount <= 0,
             loading: false,
         }));
 }
+
+export type { TargetConnection } from "./siyuan-api";
