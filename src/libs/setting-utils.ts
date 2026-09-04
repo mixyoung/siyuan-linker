@@ -122,6 +122,7 @@ export class SettingUtils {
         if (data) {
             for (let [key, item] of this.settings) {
                 item.value = data?.[key] ?? item.value;
+                this.updateElementFromValue(key);
             }
         }
         this.plugin.data[this.name] = this.dump();

@@ -1,149 +1,225 @@
-## 插件介绍
+# SiYuan Linker
 
-本插件用于连接两个思源笔记，实现相互传输笔记的功能，我主要用于连接windows版和docker版的思源笔记   
+Transfer notes and workspace data between independent SiYuan instances.
 
+SiYuan Linker is designed for workflows such as:
 
-> ~~v0.2.x版本加入alist页面~~
+- Editing on SiYuan Desktop while publishing from a Docker-hosted instance.
+- Capturing web content on a remote instance and pulling it into a local workspace.
+- Moving selected notes and assets between separate workspaces.
 
-> 0.2.7:  
- 下架：alist相关功能，如有需求请下载alist附件管理插件(此功能与插件名称不符，故将alist相关功能分离出去)
+> [!WARNING]
+> SiYuan Linker uses SiYuan kernel file and data-import APIs. Back up both the local and target workspaces before transferring data. Never run a full transfer or pull operation unless you have confirmed the direction and destination.
 
-#### 目前有的功能  
-1. 将win端的单个笔记上传到docker端（顶栏右侧-传输当前笔记）（笔记路径不会发生改变）
-2. 将win端的笔记全部传输到docker端（设置-全量传输）
-3. 将docker端的笔记全部传输到win端（设置-全量拉取）
-4. ~~将win端或docker端的笔记全量备份到alist（顶栏左侧-备份到alist）~~
-5. 可视化docker端笔记的文件树，并支持多选后，多笔记拉取（右侧dock栏）
-6. ~~嵌入alist网页，并自动识别alist的链接，不在跳转到浏览器~~
+## Features
 
-#### 达到目的（使用场景）
-1. ~~方便将数据备份到alist~~
-2. docker端用于展示（只读），而win端负责将写好的笔记上传到docker端用于分享
-3. docker端用于网络剪藏，然后win端拉取docker端的笔记
-4. ~~嵌入alist网页，用于大型附件的的上传，而思源笔记只需记下链接即可（win端可以直接拖拽获取上传的附件链接）~~
+### Transfer the current note
 
+Transfer the currently open local note to the selected target while preserving its document path and notebook structure where possible. The operation includes:
 
-### 如发现bug，欢迎反馈，或提出想法
+- The `.sy` document data
+- Assets referenced by the document
+- Attribute-view data used by the document
+- Notebook name and open state
 
-## ！！注意！！本插件未经过全面测试，请在使用本插件前备份好数据防止数据流失！！注意！！
+An optional read-only marker can be added to transferred documents when the target is intended for publishing or read-only access.
 
-## ！！注意！！本插件涉及到笔记文件相关的操作，请在使用本插件前备份好数据防止数据流失！！注意！！
+### Pull selected remote notes
 
-## 可能会遇到的问题
+The **Remote notes** dock provides a browsable document tree for the selected target:
 
-- 思源服务器地址 配置相关
-  - 填网址时不要在最后加“/” 
-   正确示例： 
-   http://alist.example.com  
-  错误示例：
-   http://alist.example.com/
+- Switch between remote notebooks
+- Expand child documents on demand
+- Select multiple documents
+- Pull selected documents and their resources into the local workspace
 
+The tree is loaded lazily, so child documents are requested only when their parent is expanded.
 
+### Transfer all workspace data
 
-## 更新日志 
- 0.0.1: 初版
+Plugin settings provide two full-data operations:
 
- 0.0.2: 对无附件时的判断进行优化
+- **Transfer all data:** export the local workspace data and import it into the target.
+- **Pull all data:** export the target workspace data and import it into the local workspace.
 
- 0.0.3: 使用多文件编程模式
+Full-data operations use SiYuan's export and import APIs. They are intended for initialization or migration, not real-time synchronization.
 
- 0.0.4: 优化消息提示
+### Two target configurations
 
- 0.0.5: 设置修改优化，修改后自动马上保存
+Store two target SiYuan server configurations and switch between them in plugin settings.
 
- 0.0.5:增加连接验证功能
+Each target contains:
 
- 0.0.5: 增加日志输出控制
+- A SiYuan server URL
+- An API token
 
- 0.0.6: 修复对于原数据在新笔记本上传输过去虽创建了新笔记本但默认关闭了新笔记本,优化日志输出控制
+When the selected target changes, the Remote notes dock clears stale selections and reloads from the new target.
 
- TODO: 增加同时对子笔记的传输（以后再说）
+## Installation
 
- 0.0.7: 修复传输后数据库没有值
+### Install from Marketplace
 
- 0.0.7: 优化插件消息反馈（点验证的时候，返回正在验证的消息通知）
+In SiYuan, open:
 
- 0.0.8: 增加传输后标记功能，和传输锁定功能 
+`Settings → Marketplace → Plugins`
 
- 0.0.8：关于传输后覆盖远程编辑的问题，目前的解决方案是：
-- 1 . 提供拉取远程笔记功能（对比本地编辑时间，进而判断是否拉取）{若网络不好，体验很差} 放弃
-- 2 . 在云端复制为副本后再编辑，这样就不怕覆盖远程编辑内容
-- TODO 3 . 在传输前判断是否有存在相同的笔记，若有，则判断是否为只读笔记，若是只读笔记，则上传，若其他情况，则创建副本后上传
- 0.1.0: 增加菜单选项栏 
+Search for **SiYuan Linker** and install it.
 
- 0.1.0：全量传输（使用sy.zip实现），单个笔记不使用zip实现，因为会重新生成新文件，还好之前的努力没有白费
+### Manual installation
 
- IOFO: 修改文件名的api，确定不支持修改data文件夹外的文件 
+1. Download `package.zip` from the project releases.
+2. Extract it into the SiYuan workspace directory:
 
- TODO: 在全量传输后自动删除本地zip文件 (思源笔记好像自带这个功能)
+   ```text
+   data/plugins/siyuan-linker
+   ```
 
- 0.1.1: 全量传输存在BUG，需要修复，（已修复） 
+3. Restart SiYuan or reload the plugin.
 
- 0.1.1: 全量传输和备份功能不常用，放到插件设置中
+## Target configuration
 
- 0.1.1: 新增全量拉取功能
+1. Obtain the API token from the target SiYuan instance.
+2. Open SiYuan Linker settings.
+3. Enter the target URL and API token.
+4. Select the target configuration to use.
+5. Click **Validate connection**.
 
- 0.1.2：增加多个目标思源服务
+Example target URLs:
 
- 0.1.3: 增加备份到alist功能
+```text
+http://127.0.0.1:6806
+https://siyuan.example.com
+```
 
- 0.1.4: 优化日志输出
+The plugin removes trailing slashes automatically, but using the full URL without a trailing slash is recommended.
 
-第一个发布版本0.1.5
- > 0.1.5:  
-  fix: 修复全量传输时，若工作空间为中文路径，会导致文件名乱码，导致文件无法下载
+If the target is behind a reverse proxy, make sure the proxy supports:
 
- > 0.1.6:  
- 修复全量备份ui显示问题  
- 增加对mac的兼容插件配置(理论上支持所有设备，但mac和ios设备未测试) 
+- SiYuan `/api/*` requests
+- Large file uploads and downloads
+- An appropriate cross-origin policy
+- Sufficient request timeouts
 
- > 0.1.7:  
- 优化全量备份ui显示  
- 优化部分解释性文字  
- 优化备份到alist的相关配置  
- 优化备份到alist时的一些错误判断  
- 更改了md文件
+## Usage
 
- > 0.1.8:  
- 增加：对目标源笔记的可视化文件树展示，方便选择选择拉取目标源笔记  
- 修复：全量拉取时，若工作空间为中文路径，会导致文件名乱码，导致文件无法下载  
- 融入vue前端框架
+### Transfer the current note
 
-> 0.1.9:  
- 优化：报错反馈  
- 增加：对夜间和白天主题的适配
+1. Open the note to transfer.
+2. Click the **Data transfer** icon in the top toolbar.
+3. Select **Transfer current note**.
+4. Wait for the completion notification.
 
-> 0.2.0:  
- 增加：嵌入alist网页  
- 优化：删除一些无用代码  
+### Pull selected notes
 
-> 0.2.1:  
- 优化：优化alist嵌入体验  
- 优化：删除了没有使用的svelte
+1. Open the **Remote notes** dock.
+2. Select a remote notebook.
+3. Expand the document tree and select one or more documents.
+4. Click **Pull notes**.
 
-> 0.2.2:   
- 优化：允许对iframe的剪切板权限（进而优化网页端的alist复制链接体验）  
+### Transfer or pull all data
 
-> 0.2.3:   
- 优化：对嵌入alist网页增加错误反馈   
- 更新：插件介绍  
+Open plugin settings and use **Transfer all data** or **Pull all data**.
 
-> 0.2.4:  
- 增加：上传附件到alist功能  
+Confirm the direction before proceeding:
 
-> 0.2.5:  
- 优化：上传附件到alist功能
+```text
+Transfer all data: local → target
+Pull all data:     target → local
+```
 
-> 0.2.6:  
- 增加：kimi和deepseek网页嵌入
+## Behavior and limitations
 
-> 0.2.7:  
- 下架：alist相关功能，如有需求请下载alist附件管理插件
+- This plugin performs one-way data transfers; it is not a real-time two-way sync engine.
+- It does not merge document content or resolve editing conflicts.
+- Existing files at the destination path may be overwritten by SiYuan's file APIs.
+- Regular document assets and attribute-view data are transferred with the document.
+- Network interruptions, reverse-proxy limits, or insufficient target permissions can cause partial failures.
+- Avoid editing the same document on both instances while it is being transferred.
+- Mobile and browser frontends are enabled in the manifest, but desktop is recommended for large transfers.
 
-## 最后
-自用插件，开源分享，代码凌乱不堪，插件使用了思源社区的模板，主要参考https://github.com/siyuan-community/siyuan-developer-docs
+## Privacy and security
 
+- API tokens are stored only in the current SiYuan workspace's plugin settings.
+- Do not publish settings files, logs, or screenshots containing tokens.
+- Use HTTPS for remote SiYuan instances whenever possible.
+- Do not transfer private notes to an untrusted target.
+- The plugin does not intentionally send data to services other than the configured target.
 
-### 禁止使用与免责约定：
-禁止使用本产品用于任意违法乱纪相关行为。
-作者不为你使用本产品所产生的任何后果负责。
+## Development
+
+Requirements:
+
+- Node.js 20 or later
+- pnpm 10
+- SiYuan 3.0.12 or later
+
+Install dependencies:
+
+```bash
+pnpm install
+```
+
+Run type checking:
+
+```bash
+pnpm typecheck
+```
+
+Validate project metadata and locale files:
+
+```bash
+pnpm validate
+```
+
+Create a production build:
+
+```bash
+pnpm build
+```
+
+Build outputs:
+
+```text
+dist/
+package.zip
+```
+
+Start watch mode:
+
+```bash
+pnpm dev
+```
+
+Create a development link:
+
+```bash
+pnpm make-link
+```
+
+## Project structure
+
+```text
+src/index.ts                 Plugin entry point, settings, and transfer orchestration
+src/myapi.ts                 SiYuan file and data-transfer APIs
+src/FileTreeApi.ts           Remote document-tree API
+src/app.vue                  Remote notes dock
+src/MyVue/FileTree.vue       Recursive document-tree component
+public/i18n/                 English and Chinese locale files
+scripts/validate_project.js  Project consistency checks
+```
+
+## Reporting issues
+
+When opening an issue, include the following where possible:
+
+- SiYuan version
+- Plugin version
+- Local and target deployment types
+- Operation type: current note, selected-note pull, or full-data operation
+- Redacted error output and reproduction steps
+
+Project repository: <https://github.com/mixyoung/siyuan-linker>
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

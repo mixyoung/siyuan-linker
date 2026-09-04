@@ -1,241 +1,265 @@
 <template>
-  <div id="app">
-    <div class="header-container"> <!-- 添加一个新的容器 -->
-      <h1 class="title">目标源笔记</h1>
-      <div>
-        <!-- <label class="MY-select-label" for="options">笔记本:</label> -->
-        <select v-model="selectedOption" id="options" class="MY-select-box" @change="onOptionChange">
-          <option v-for="option in options" :key="option.id" :value="option.name">
-            {{ option.name }}
-          </option>
-        </select>
-      </div>
-      <button class="MY-refresh-button" @click="refreshPage()">刷新</button>
+  <div class="remote-notes">
+    <div class="header-container">
+      <h1 class="title">{{ plugin.i18n.remoteNotes }}</h1>
+      <select
+        v-model="selectedNotebookId"
+        class="select-box"
+        :aria-label="plugin.i18n.notebook"
+        @change="loadRoot"
+      >
+        <option v-for="option in notebooks" :key="option.id" :value="option.id">
+          {{ option.name }}
+        </option>
+      </select>
+      <button class="action-button refresh-button" :disabled="loading" @click="refresh">
+        {{ plugin.i18n.refresh }}
+      </button>
     </div>
-    <span v-if="loading">加载中...</span>
-    <div class="tree-container">
-      <FileTree :items="fileTreeData" />
+
+    <p v-if="loading" class="status">{{ plugin.i18n.loading }}</p>
+    <p v-else-if="error" class="status error">{{ error }}</p>
+    <p v-else-if="!notebooks.length" class="status">{{ plugin.i18n.noNotebooks }}</p>
+
+    <div v-else class="tree-container">
+      <FileTree
+        :items="fileTreeData"
+        :selected-ids="selectedIds"
+        :i18n="plugin.i18n"
+        @toggle-expand="toggleExpand"
+        @toggle-select="toggleSelect"
+      />
     </div>
-    <!-- 实时展示 url, token, alistname, alistmima, alistUrl -->
-    <!-- 当之变化时，实时更新 -->
+
     <div class="info-container">
-      <p class="info-item">服务源: <span class="info-value">{{ serNum }}</span></p>
-      <!-- 当selectedFileIdsName有值时，显示，否则不显示 -->
-      <p v-if="selectedFileIdsName.length" class="info-item">已选笔记: <span class="info-value">{{ selectedFileIdsName
-          }}</span></p>
-      <p>-----------------</p>
-      <div v-if="selectedFileIdsName.length"><button class="MY-pull-note-button"
-          @click="plugin.pullNote(selectedFileIds)">拉取笔记</button></div>
+      <p class="info-item">
+        {{ plugin.i18n.targetService }}:
+        <span class="info-value">{{ plugin.getSelectedTargetLabel() }}</span>
+      </p>
+      <p v-if="selectedDocuments.length" class="info-item">
+        {{ plugin.i18n.selectedNotes }}:
+        <span class="info-value">{{ selectedDocuments.map((item) => item.name).join(', ') }}</span>
+      </p>
+      <button
+        v-if="selectedDocuments.length"
+        class="action-button"
+        :disabled="pulling"
+        @click="pullSelected"
+      >
+        {{ pulling ? plugin.i18n.pulling : plugin.i18n.pullNotes }}
+      </button>
     </div>
   </div>
 </template>
 
+<script lang="ts">
+import { defineComponent, type PropType } from "vue";
+import FileTree from "./MyVue/FileTree.vue";
+import { listDocuments, listNotebooks, type FileTreeNode, type NotebookOption } from "./FileTreeApi";
+import type SiYuanLinker from "./index";
 
-
-<script>
-import { ref } from 'vue';
-import FileTree from './MyVue/FileTree.vue';
-import { serNum } from '@/index';
-import * as filetree from '@/FileTreeApi';
-import { selectedFileIdsName, selectedFileIds } from './MyVue/FileTree.vue';
-export const selectedOption = ref("");
-export default {
-//TODO:通过opentab打开笔记本md文件
-  name: 'App',
-  components: {
-    FileTree
-  },
+export default defineComponent({
+  name: "App",
+  components: { FileTree },
   props: {
-    plugin: Object // 接收 plugin 对象
-  },
-  // setup() {
-  // },
-
-  async mounted() {
-    this.loading = true;
-    this.options = await filetree.listNotebooks()
-    this.loading = false;
-    // console.log('mounted');
-    // console.log(await filetree.getFileTreeData());
-    // this.fileTreeData = await filetree.getFileTreeData();
-  },
-  methods: {
-    async refreshPage1() {
-      this.loading = true;
-      this.serNum = serNum;
-      const value2 = await filetree.getFileTreeData();
-      console.log(value2);
-      this.fileTreeData = value2
-      this.loading = false;
+    plugin: {
+      type: Object as PropType<SiYuanLinker>,
+      required: true,
     },
-    async refreshPage() {
-      this.loading = true;
-      this.serNum = serNum;
-      // filetree.ceshi();
-      const value2 = await filetree.getFileTreeData();
-      console.log(value2);
-      this.fileTreeData = value2
-      this.options = await filetree.listNotebooks()
-      // console.log(fileTreeData);
-      // console.log(fileTreeData.value);
-      this.loading = false;
-    },
-    onOptionChange() {
-      // 选择选项后执行的函数
-      console.log('选择的笔记本:', this.selectedOption);
-      this.refreshPage1();
-    }
   },
   data() {
     return {
-      serNum,
-      fileTreeData: ref([]),
-      selectedFileIdsName,
-      selectedFileIds,
-      filetree,
-      plugin: this.plugin,
-      selectedOption,
-      options: [],
-      loading: false
+      notebooks: [] as NotebookOption[],
+      selectedNotebookId: "",
+      fileTreeData: [] as FileTreeNode[],
+      selectedDocuments: [] as FileTreeNode[],
+      loading: false,
+      pulling: false,
+      error: "",
+      unsubscribeTargetChange: null as null | (() => void),
     };
-  }
-}
-
+  },
+  computed: {
+    selectedIds(): string[] {
+      return this.selectedDocuments.map((item) => item.id);
+    },
+  },
+  async mounted() {
+    this.unsubscribeTargetChange = this.plugin.onTargetChange(() => {
+      this.notebooks = [];
+      this.fileTreeData = [];
+      this.selectedDocuments = [];
+      void this.refresh();
+    });
+    await this.refresh();
+  },
+  beforeUnmount() {
+    this.unsubscribeTargetChange?.();
+  },
+  methods: {
+    async refresh() {
+      this.loading = true;
+      this.error = "";
+      this.selectedDocuments = [];
+      try {
+        const target = this.plugin.getTargetConnection();
+        this.notebooks = await listNotebooks(target);
+        if (!this.notebooks.some((item) => item.id === this.selectedNotebookId)) {
+          this.selectedNotebookId = this.notebooks[0]?.id ?? "";
+        }
+        await this.loadRoot();
+      } catch (error) {
+        console.error("Failed to refresh remote notes:", error);
+        this.fileTreeData = [];
+        this.error = this.plugin.i18n.loadRemoteNotesFailed;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async loadRoot() {
+      this.selectedDocuments = [];
+      if (!this.selectedNotebookId) {
+        this.fileTreeData = [];
+        return;
+      }
+      this.loading = true;
+      this.error = "";
+      try {
+        this.fileTreeData = await listDocuments(
+          this.plugin.getTargetConnection(),
+          this.selectedNotebookId,
+        );
+      } catch (error) {
+        console.error("Failed to load remote document tree:", error);
+        this.fileTreeData = [];
+        this.error = this.plugin.i18n.loadRemoteNotesFailed;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async toggleExpand(item: FileTreeNode) {
+      if (!item.hasChildren || item.loading) return;
+      if (item.expanded) {
+        item.expanded = false;
+        return;
+      }
+      if (!item.loaded) {
+        item.loading = true;
+        try {
+          item.children = await listDocuments(
+            this.plugin.getTargetConnection(),
+            item.box,
+            item.path,
+          );
+          item.loaded = true;
+        } catch (error) {
+          console.error("Failed to load child documents:", error);
+          this.error = this.plugin.i18n.loadRemoteNotesFailed;
+          return;
+        } finally {
+          item.loading = false;
+        }
+      }
+      item.expanded = true;
+    },
+    toggleSelect(item: FileTreeNode) {
+      const index = this.selectedDocuments.findIndex((selected) => selected.id === item.id);
+      if (index === -1) {
+        this.selectedDocuments.push(item);
+      } else {
+        this.selectedDocuments.splice(index, 1);
+      }
+    },
+    async pullSelected() {
+      this.pulling = true;
+      try {
+        await this.plugin.pullNote(this.selectedDocuments.map((item) => item.id));
+      } finally {
+        this.pulling = false;
+      }
+    },
+  },
+});
 </script>
 
-<style>
-#app {
-  font-family: Avenir, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  color: var(--b3-theme-on-background);
-  /* background-color: #1e1e1e;
-  min-height: 98%; */
+<style scoped>
+.remote-notes {
   padding: 10px;
-}
-
-.tree-container {
-  margin-left: -20px;
-  /* 设置整体左移 */
-  justify-content: flex-start;
-  /* 或 'center'、'space-between' 等 */
-  align-items: flex-start;
-  /* 防止在垂直方向的溢出 */
-  overflow: hidden;
-  /* 隐藏不必要的滚动条 */
-
-}
-
-.title {
   color: var(--b3-theme-on-background);
-  font-size: 20px;
-  margin-bottom: 20px;
+  font-family: Avenir, Helvetica, Arial, sans-serif;
 }
 
 .header-container {
   display: flex;
-  /* 使用 Flexbox 布局 */
   align-items: center;
-  /* 垂直居中对齐元素 */
+  gap: 8px;
 }
 
 .title {
-  margin-right: 15px;
-  /* 给标题和按钮之间添加一点间隔 */
+  margin: 0 4px 12px 0;
+  font-size: 20px;
 }
 
-.MY-refresh-button {
-  background: none;
-  /* 按钮背景色 */
+.select-box {
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 3px 5px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: 4px;
+  background: var(--b3-theme-surface);
   color: var(--b3-theme-on-background);
-  /* 按钮文字颜色 */
-  /* 加个边框 */
-  border: 1px solid var(--b3-theme-on-background);
-  /* 字体大小 */
-  font-size: 13px;
-  margin-bottom: 20px;
-  border-radius: 5px;
-  /* 圆角效果 */
-  /* padding: 2px 2px; 内边距 */
-  cursor: pointer;
-  /* 鼠标移动到按钮上时变为手型 */
-  transition: background-color 0.3s ease;
-  /* 添加过渡效果 */
-  margin-left: auto;
-  /* 靠右侧边 */
-
 }
 
-.MY-refresh-button:hover {
+.action-button {
+  padding: 4px 10px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--b3-theme-on-background);
+  cursor: pointer;
+}
+
+.action-button:hover:not(:disabled) {
   background-color: var(--b3-list-hover);
-  /* 悬停时的背景色 */
+}
+
+.action-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.refresh-button {
+  margin: 0 0 12px auto;
+}
+
+.tree-container {
+  margin-left: -14px;
+  overflow: hidden;
+}
+
+.status {
+  padding: 12px 4px;
+  color: var(--b3-theme-on-surface);
+}
+
+.status.error {
+  color: var(--b3-card-error-color);
 }
 
 .info-container {
-  background-color: var(--b3-theme-surface);
-  /* 深色背景 */
+  margin-top: 20px;
   padding: 15px;
   border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-  margin-top: 20px;
+  background-color: var(--b3-theme-surface);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .info-item {
-  font-size: 16px;
-  color: var(--b3-theme-on-background);;
-  /* 浅色文本 */
+  font-size: 14px;
 }
 
 .info-value {
-  font-weight: bold;
-  color: #61afef;
-  /* 亮色值 */
+  font-weight: 600;
+  color: var(--b3-theme-primary);
 }
-
-.MY-select-box {
-  background-color: var(--b3-theme-surface);
-  color: var(--b3-theme-on-background);
-  border: 1px solid var(--b3-theme-on-background);
-  /* padding: 5px; */
-  border-radius: 4px;
-  font-size: 13px;
-  margin-bottom: 20px;
-  margin-right: 6px;
-}
-
-.MY-select-box option {
-  background-color: var(--b3-theme-surface);;
-  color: var(--b3-theme-on-background);;
-}
-
-.MY-select-label {
-  margin-right: 10px;
-}
-
-.MY-pull-note-button {
-  background: none;
-  /* 按钮背景色 */
-  color: var(--b3-theme-on-background);
-  /* 按钮文字颜色 */
-  /* 加个边框 */
-  border: 1px solid var(--b3-theme-on-background);
-  /* 字体大小 */
-  font-size: 13px;
-  margin-bottom: 5px;
-  border-radius: 5px;
-  /* 圆角效果 */
-  /* padding: 2px 2px; 内边距 */
-  cursor: pointer;
-  /* 鼠标移动到按钮上时变为手型 */
-  transition: background-color 0.3s ease;
-  /* 添加过渡效果 */
-  margin-left: auto;
-
-}
-
-.MY-pull-note-button:hover {
-  background-color: var(--b3-list-hover);
-  /* 悬停时的背景色 */
-}
-
 </style>

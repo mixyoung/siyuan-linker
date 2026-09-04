@@ -1,96 +1,106 @@
 <template>
   <ul class="file-tree">
-    <li v-for="item in items" :key="item.id" @click="toggle(item, $event)">
-      <div :class="['tree-item', { expanded: item.expanded, selected: selectedFileIds.includes(item.id) }]">
-        <span class="icon">{{ item.type === 'folder' ? (item.expanded ? '📂' : '📁') : '📄' }}</span>
-        <span class="name">{{ item.name }}</span>
+    <li v-for="item in items" :key="item.id">
+      <div :class="['tree-item', { selected: selectedIds.includes(item.id) }]">
+        <button
+          class="expand-button"
+          :class="{ hidden: !item.hasChildren }"
+          :title="item.expanded ? i18n.collapse : i18n.expand"
+          @click.stop="$emit('toggle-expand', item)"
+        >
+          {{ item.loading ? '…' : (item.expanded ? '▾' : '▸') }}
+        </button>
+        <span class="document-icon" aria-hidden="true">▤</span>
+        <button class="document-name" @click.stop="$emit('toggle-select', item)">
+          {{ item.name }}
+        </button>
       </div>
-      <FileTree v-if="item.children && item.expanded" :items="item.children" />
+      <FileTree
+        v-if="item.expanded && item.children.length"
+        :items="item.children"
+        :selected-ids="selectedIds"
+        :i18n="i18n"
+        @toggle-expand="$emit('toggle-expand', $event)"
+        @toggle-select="$emit('toggle-select', $event)"
+      />
     </li>
   </ul>
 </template>
 
-<script>
+<script lang="ts">
+import { defineComponent, type PropType } from "vue";
+import type { FileTreeNode } from "../FileTreeApi";
 
-import { ref } from 'vue';
-export const selectedFileIds = ref([]);
-export const selectedFileIdsName = ref([]);
-export const selectedFileBox = ref([]);
-export default {
-  name: 'FileTree',
+export default defineComponent({
+  name: "FileTree",
   props: {
     items: {
-      type: Array,
-      required: true
-    }
+      type: Array as PropType<FileTreeNode[]>,
+      required: true,
+    },
+    selectedIds: {
+      type: Array as PropType<string[]>,
+      required: true,
+    },
+    i18n: {
+      type: Object as PropType<Record<string, string>>,
+      required: true,
+    },
   },
-  data() {
-    return {
-      selectedFileIds,
-      selectedFileIdsName,
-      selectedFileBox
-
-    };
-  },
-  methods: {
-    toggle(item, event) {
-      if (item.type === 'folder') {
-        item.expanded = !item.expanded;
-        event.stopPropagation();
-      } else {
-        const index = this.selectedFileIds.indexOf(item.id);
-        if (index === -1) {//TODO:待优化，之后用对象数组
-          this.selectedFileIds.push(item.id);
-          this.selectedFileIdsName.push(item.name);
-          this.selectedFileBox.push(item.box);
-        } else {
-          this.selectedFileIds.splice(index, 1);
-          this.selectedFileIdsName.splice(index, 1);
-          this.selectedFileBox.splice(index, 1);
-        }
-        console.log(selectedFileIds.value);
-        console.log(this.selectedFileIds);
-        event.stopPropagation();
-      }
-    }
-  }
-}
+  emits: ["toggle-expand", "toggle-select"],
+});
 </script>
 
 <style scoped>
 .file-tree {
-  list-style-type: none;
-  padding-left: 15px;
+  list-style: none;
+  margin: 0;
+  padding-left: 14px;
   color: var(--b3-theme-on-background);
-}
-
-.tree-item:hook {
-  background-color: var(--b3-list-hover);
 }
 
 .tree-item {
   display: flex;
   align-items: center;
-  padding: 5px;
+  min-height: 30px;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+
+.tree-item:hover,
+.tree-item.selected {
+  background-color: var(--b3-list-hover);
+}
+
+.expand-button,
+.document-name {
+  border: 0;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
 }
 
-.tree-item .icon {
+.expand-button {
+  width: 24px;
+  padding: 2px;
+  flex: 0 0 24px;
+}
+
+.expand-button.hidden {
+  visibility: hidden;
+}
+
+.document-icon {
   margin-right: 5px;
+  color: var(--b3-theme-primary);
 }
 
-.tree-item.expanded {
-  background-color: var(--b3-theme-primary-lightest);
-}
-
-.name {
-  margin-right: auto;
-}
-
-.tree-item.selected {
-  background-color: var(--b3-theme-primary-lightest);
-  /* 加圆角 */
-  border-radius: 5px;
-  /* 你可以根据需要调整颜色 */
+.document-name {
+  min-width: 0;
+  padding: 4px 2px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
