@@ -1,5 +1,5 @@
 {
-  "dataTransfer": "数据传输",
+  "dataTransfer": "siyuan-linker",
   "remoteNotes": "目标源笔记",
   "notebook": "笔记本",
   "refresh": "刷新",
@@ -43,7 +43,7 @@
   "connectionSucceededVersion": "连接成功：SiYuan ${version}，共 ${count} 个笔记本",
   "connectionFailed": "连接目标源失败",
   "legacyTokenWarning": "检测到旧版明文 Token。请在思源“设置 → 密钥与变量”中创建 Secret，并在插件设置中填写其名称。验证成功后旧值会从插件配置中清除。",
-  "transferCurrentNote": "传输当前笔记",
+  "transferCurrentNote": "推送当前笔记",
   "noCurrentDocument": "请先打开要传输的文档",
   "singleTransfer": "单笔记传输",
   "multipleTransfer": "多笔记传输",

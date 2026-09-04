@@ -1,5 +1,5 @@
 {
-  "dataTransfer": "Data transfer",
+  "dataTransfer": "siyuan-linker",
   "remoteNotes": "Remote notes",
   "notebook": "Notebook",
   "refresh": "Refresh",
@@ -43,7 +43,7 @@
   "connectionSucceededVersion": "Connected: SiYuan ${version}, ${count} notebook(s)",
   "connectionFailed": "Failed to connect to the target server",
   "legacyTokenWarning": "A legacy plaintext token was found. Create a Secret under SiYuan Settings → Secrets and variables and enter its name in the plugin settings. The old value is removed after successful validation.",
-  "transferCurrentNote": "Transfer current note",
+  "transferCurrentNote": "Push current note",
   "noCurrentDocument": "Open a document before transferring",
   "singleTransfer": "Single-note transfer",
   "multipleTransfer": "Multi-note transfer",

@@ -29,16 +29,15 @@ export default class SiYuanLinker extends Plugin {
     private legacyTokens: Partial<Record<TargetNumber, string>> = {};
 
     async onload() {
-        this.addIcons(`<symbol id="iconTransfer" viewBox="0 0 32 32">
-<path d="M27.414 19.414l-4-4c-0.781-0.781-2.047-0.781-2.828 0s-0.781 2.047 0 2.828l1.586 1.586h-12.172c-1.105 0-2 0.895-2 2s0.895 2 2 2h12.172l-1.586 1.586c-0.781 0.781-0.781 2.047 0 2.828 0.39 0.39 0.902 0.586 1.414 0.586s1.024-0.195 1.414-0.586l4-4c0.781-0.781 0.781-2.047 0-2.828zM10.586 10.586l-4 4c-0.781 0.781-0.781 2.047 0 2.828 0.39 0.39 0.902 0.586 1.414 0.586s1.024-0.195 1.414-0.586l1.586-1.586h12.172c1.105 0 2-0.895 2-2s-0.895-2-2-2h-12.172l1.586-1.586c0.781-0.781 0.781-2.047 0-2.828s-2.047-0.781-2.828 0l-4 4c-0.781 0.781-0.781 2.047 0 2.828z"></path>
-</symbol>
-<symbol id="iconSaving" viewBox="0 0 32 32">
-<path d="M28 22h-24c-1.105 0-2-0.895-2-2v-12c0-1.105 0.895-2 2-2h24c1.105 0 2 0.895 2 2v12c0 1.105-0.895 2-2 2zM4 8v12h24v-12h-24zM16 18l-6-6h4v-4h4v4h4l-6 6zM26 24h-20c-1.105 0-2-0.895-2-2v-2h24v2c0 1.105-0.895 2-2 2z"></path>
+        this.addIcons(`<symbol id="iconLinker" viewBox="0 0 32 32">
+<rect x="4.5" y="5.5" width="17" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2" opacity="0.48"></rect>
+<rect x="10.5" y="6.5" width="17" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"></rect>
+<path d="M8 13.5h13.5l-2.8-2.8M24 19.5H10.5l2.8 2.8" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"></path>
 </symbol>`);
 
         this.addTopBar({
             id: "transfer",
-            icon: "iconTransfer",
+            icon: "iconLinker",
             title: this.i18n.dataTransfer,
             position: "right",
             callback: (event: MouseEvent) => {
@@ -56,7 +55,7 @@ export default class SiYuanLinker extends Plugin {
             config: {
                 position: "RightTop",
                 size: { width: 300, height: 0 },
-                icon: "iconSaving",
+                icon: "iconLinker",
                 title: this.i18n.remoteNotes,
             },
             data: null,
@@ -243,7 +242,7 @@ export default class SiYuanLinker extends Plugin {
     private openTransferMenu(rect?: DOMRect) {
         const menu = new Menu("siyuan-linker-transfer-menu");
         menu.addItem({
-            icon: "iconTransfer",
+            icon: "iconLinker",
             label: this.i18n.transferCurrentNote,
             click: () => void this.runSingleTransfer(),
         });
