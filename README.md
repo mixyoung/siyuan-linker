@@ -1,149 +1,46 @@
-## 插件介绍
+# SiYuan Linker
 
-本插件用于连接两个思源笔记，实现相互传输笔记的功能，我主要用于连接windows版和docker版的思源笔记   
+Transfer notes and workspace data between local and remote SiYuan instances. A common setup is a desktop workspace connected to a Docker-hosted SiYuan server.
 
+> Since v0.3.0, the technical plugin ID is `siyuan-linker`. Settings from the former `siyuan-link` plugin are not migrated automatically and must be configured again.
 
-> ~~v0.2.x版本加入alist页面~~
+> This plugin reads and writes SiYuan workspace files. Back up both workspaces and verify the target settings before transferring notes or all data.
 
-> 0.2.7:  
- 下架：alist相关功能，如有需求请下载alist附件管理插件(此功能与插件名称不符，故将alist相关功能分离出去)
+## Features
 
-#### 目前有的功能  
-1. 将win端的单个笔记上传到docker端（顶栏右侧-传输当前笔记）（笔记路径不会发生改变）
-2. 将win端的笔记全部传输到docker端（设置-全量传输）
-3. 将docker端的笔记全部传输到win端（设置-全量拉取）
-4. ~~将win端或docker端的笔记全量备份到alist（顶栏左侧-备份到alist）~~
-5. 可视化docker端笔记的文件树，并支持多选后，多笔记拉取（右侧dock栏）
-6. ~~嵌入alist网页，并自动识别alist的链接，不在跳转到浏览器~~
+- Transfer the current note, its assets, and attribute-view data while preserving its path.
+- Transfer all local workspace data to the target instance.
+- Pull all target workspace data into the local instance.
+- Browse target notebooks in a lazy-loaded document tree and pull multiple selected notes.
+- Configure and switch between two target instances.
+- Optionally add a read-only marker to transferred notes.
 
-#### 达到目的（使用场景）
-1. ~~方便将数据备份到alist~~
-2. docker端用于展示（只读），而win端负责将写好的笔记上传到docker端用于分享
-3. docker端用于网络剪藏，然后win端拉取docker端的笔记
-4. ~~嵌入alist网页，用于大型附件的的上传，而思源笔记只需记下链接即可（win端可以直接拖拽获取上传的附件链接）~~
+DeepSeek/Kimi web docks and AList features have been removed. SiYuan Linker now focuses on note transfer between SiYuan instances.
 
+## Configuration
 
-### 如发现bug，欢迎反馈，或提出想法
+Enter the target SiYuan URL and API token in the plugin settings. Do not add a trailing slash to the URL:
 
-## ！！注意！！本插件未经过全面测试，请在使用本插件前备份好数据防止数据流失！！注意！！
+- Correct: `http://siyuan.example.com`
+- Incorrect: `http://siyuan.example.com/`
 
-## ！！注意！！本插件涉及到笔记文件相关的操作，请在使用本插件前备份好数据防止数据流失！！注意！！
+Use **Validate connection** after saving the settings.
 
-## 可能会遇到的问题
+## Usage
 
-- 思源服务器地址 配置相关
-  - 填网址时不要在最后加“/” 
-   正确示例： 
-   http://alist.example.com  
-  错误示例：
-   http://alist.example.com/
+- **Current note:** open a document, click the Data transfer icon in the top bar, and choose **Transfer current note**.
+- **All data:** use **Transfer all data** or **Pull all data** in plugin settings.
+- **Selected notes:** open the Remote notes dock, choose a notebook, expand the tree, select documents, and click **Pull notes**.
 
+## History
 
+- v0.1.x introduced single-note and full-data transfer, multiple targets, and the remote file tree.
+- v0.2.0–v0.2.5 included AList features; they were split out and removed in v0.2.7.
+- v0.2.6 introduced DeepSeek/Kimi web docks; they were removed in later development.
+- v0.2.7 removed AList functionality.
 
-## 更新日志 
- 0.0.1: 初版
+## Feedback and license
 
- 0.0.2: 对无附件时的判断进行优化
+Report issues at <https://github.com/mixyoung/siyuan-linker>.
 
- 0.0.3: 使用多文件编程模式
-
- 0.0.4: 优化消息提示
-
- 0.0.5: 设置修改优化，修改后自动马上保存
-
- 0.0.5:增加连接验证功能
-
- 0.0.5: 增加日志输出控制
-
- 0.0.6: 修复对于原数据在新笔记本上传输过去虽创建了新笔记本但默认关闭了新笔记本,优化日志输出控制
-
- TODO: 增加同时对子笔记的传输（以后再说）
-
- 0.0.7: 修复传输后数据库没有值
-
- 0.0.7: 优化插件消息反馈（点验证的时候，返回正在验证的消息通知）
-
- 0.0.8: 增加传输后标记功能，和传输锁定功能 
-
- 0.0.8：关于传输后覆盖远程编辑的问题，目前的解决方案是：
-- 1 . 提供拉取远程笔记功能（对比本地编辑时间，进而判断是否拉取）{若网络不好，体验很差} 放弃
-- 2 . 在云端复制为副本后再编辑，这样就不怕覆盖远程编辑内容
-- TODO 3 . 在传输前判断是否有存在相同的笔记，若有，则判断是否为只读笔记，若是只读笔记，则上传，若其他情况，则创建副本后上传
- 0.1.0: 增加菜单选项栏 
-
- 0.1.0：全量传输（使用sy.zip实现），单个笔记不使用zip实现，因为会重新生成新文件，还好之前的努力没有白费
-
- IOFO: 修改文件名的api，确定不支持修改data文件夹外的文件 
-
- TODO: 在全量传输后自动删除本地zip文件 (思源笔记好像自带这个功能)
-
- 0.1.1: 全量传输存在BUG，需要修复，（已修复） 
-
- 0.1.1: 全量传输和备份功能不常用，放到插件设置中
-
- 0.1.1: 新增全量拉取功能
-
- 0.1.2：增加多个目标思源服务
-
- 0.1.3: 增加备份到alist功能
-
- 0.1.4: 优化日志输出
-
-第一个发布版本0.1.5
- > 0.1.5:  
-  fix: 修复全量传输时，若工作空间为中文路径，会导致文件名乱码，导致文件无法下载
-
- > 0.1.6:  
- 修复全量备份ui显示问题  
- 增加对mac的兼容插件配置(理论上支持所有设备，但mac和ios设备未测试) 
-
- > 0.1.7:  
- 优化全量备份ui显示  
- 优化部分解释性文字  
- 优化备份到alist的相关配置  
- 优化备份到alist时的一些错误判断  
- 更改了md文件
-
- > 0.1.8:  
- 增加：对目标源笔记的可视化文件树展示，方便选择选择拉取目标源笔记  
- 修复：全量拉取时，若工作空间为中文路径，会导致文件名乱码，导致文件无法下载  
- 融入vue前端框架
-
-> 0.1.9:  
- 优化：报错反馈  
- 增加：对夜间和白天主题的适配
-
-> 0.2.0:  
- 增加：嵌入alist网页  
- 优化：删除一些无用代码  
-
-> 0.2.1:  
- 优化：优化alist嵌入体验  
- 优化：删除了没有使用的svelte
-
-> 0.2.2:   
- 优化：允许对iframe的剪切板权限（进而优化网页端的alist复制链接体验）  
-
-> 0.2.3:   
- 优化：对嵌入alist网页增加错误反馈   
- 更新：插件介绍  
-
-> 0.2.4:  
- 增加：上传附件到alist功能  
-
-> 0.2.5:  
- 优化：上传附件到alist功能
-
-> 0.2.6:  
- 增加：kimi和deepseek网页嵌入
-
-> 0.2.7:  
- 下架：alist相关功能，如有需求请下载alist附件管理插件
-
-## 最后
-自用插件，开源分享，代码凌乱不堪，插件使用了思源社区的模板，主要参考https://github.com/siyuan-community/siyuan-developer-docs
-
-
-### 禁止使用与免责约定：
-禁止使用本产品用于任意违法乱纪相关行为。
-作者不为你使用本产品所产生的任何后果负责。
+Licensed under the MIT License. Do not use this software for unlawful activities; the author is not responsible for consequences arising from its use.
