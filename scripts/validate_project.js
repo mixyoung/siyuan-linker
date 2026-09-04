@@ -20,6 +20,28 @@ if (packageJson.version !== pluginJson.version) {
     failures.push(`Package version ${packageJson.version} does not match plugin version ${pluginJson.version}`);
 }
 
+const expectedReadmes = {
+    en_US: "README_en_US.md",
+    zh_CN: "README.md",
+};
+for (const [locale, readmePath] of Object.entries(expectedReadmes)) {
+    if (pluginJson.readme?.[locale] !== readmePath) {
+        failures.push(`plugin.json readme.${locale} must point to ${readmePath}`);
+    }
+    if (!fs.existsSync(path.join(root, readmePath))) {
+        failures.push(`Missing README file: ${readmePath}`);
+    }
+}
+
+const chineseReadme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+const englishReadme = fs.readFileSync(path.join(root, "README_en_US.md"), "utf8");
+if (!chineseReadme.includes("README_en_US.md")) {
+    failures.push("README.md must link to README_en_US.md");
+}
+if (!englishReadme.includes("README.md")) {
+    failures.push("README_en_US.md must link to README.md");
+}
+
 const enKeys = Object.keys(en).sort();
 const zhKeys = Object.keys(zh).sort();
 const missingInZh = enKeys.filter((key) => !(key in zh));
