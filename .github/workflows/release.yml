@@ -30,8 +30,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Type check
-        run: pnpm typecheck
+      - name: Validate, test, and type check
+        run: |
+          pnpm validate
+          pnpm typecheck
+          pnpm test
 
       - name: Build production package
         run: pnpm build
@@ -43,4 +46,4 @@ jobs:
           artifactErrorsFailBuild: true
           artifacts: "package.zip"
           token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: true
+          prerelease: false

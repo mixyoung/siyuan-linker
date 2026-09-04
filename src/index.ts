@@ -1,28 +1,16 @@
-import { createApp } from "vue";
+import { createApp, type App as VueApp } from "vue";
 import {
+    Menu,
     Plugin,
     showMessage,
-    Menu,
+    type Custom,
+    type IProtyle,
+    type MobileCustom,
 } from "siyuan";
 import App from "./app.vue";
 import "@/index.scss";
-import {
-    downloadFile,
-    exportAllData,
-    getDocumentLocation,
-    getNotebookName,
-    getNoteData,
-    getResourceLinks,
-    importAllData,
-    isconnect,
-    markTransferredReadonly,
-    putBinaryFile,
-    putTextFile,
-    refreshFileTree,
-    setNotebookConf,
-    transferDatabaseResources,
-    type TargetConnection,
-} from "@/myapi";
+import { getSystemVersion, listNotebooks, validateTargetUrl, type TargetConnection } from "./siyuan-api";
+import { transferAllData, transferDocuments, type TransferMode } from "./transfer-service";
 import { SettingUtils } from "./libs/setting-utils";
 
 const STORAGE_NAME = "menu-config";
@@ -30,12 +18,15 @@ const REMOTE_NOTES_DOCK_TYPE = "siyuan-linker-remote-notes";
 
 type TargetNumber = "1" | "2";
 
+type DocumentEvent = CustomEvent<{ protyle: IProtyle }>;
+
 export default class SiYuanLinker extends Plugin {
     private settingUtils!: SettingUtils;
     private currentDocId: string | null = null;
     private selectedTarget: TargetNumber = "1";
     private targetConnection: TargetConnection = { url: "", token: "" };
     private targetChangeListeners = new Set<() => void>();
+    private legacyTokens: Partial<Record<TargetNumber, string>> = {};
 
     async onload() {
         this.addIcons(`<symbol id="iconTransfer" viewBox="0 0 32 32">
@@ -46,17 +37,22 @@ export default class SiYuanLinker extends Plugin {
 </symbol>`);
 
         this.addTopBar({
+            id: "transfer",
             icon: "iconTransfer",
             title: this.i18n.dataTransfer,
             position: "right",
-            callback: () => {
-                const anchor = document.querySelector("#barPlugins")?.getBoundingClientRect();
+            callback: (event: MouseEvent) => {
+                const anchor = event.currentTarget instanceof HTMLElement
+                    ? event.currentTarget.getBoundingClientRect()
+                    : undefined;
                 this.openTransferMenu(anchor);
             },
         });
 
-        let remoteNotesApp: ReturnType<typeof createApp> | null = null;
+        const plugin = this;
+        const dockApps = new WeakMap<Custom | MobileCustom, VueApp>();
         this.addDock({
+            id: REMOTE_NOTES_DOCK_TYPE,
             config: {
                 position: "RightTop",
                 size: { width: 300, height: 0 },
@@ -65,23 +61,31 @@ export default class SiYuanLinker extends Plugin {
             },
             data: null,
             type: REMOTE_NOTES_DOCK_TYPE,
-            init: (dock) => {
+            init: function () {
                 const mountPoint = document.createElement("div");
                 mountPoint.className = "siyuan-linker-remote-notes-dock";
                 mountPoint.style.height = "100%";
                 mountPoint.style.width = "100%";
-                dock.element.appendChild(mountPoint);
-                remoteNotesApp = createApp(App, { plugin: this });
-                remoteNotesApp.mount(mountPoint);
+                this.element.appendChild(mountPoint);
+                const app = createApp(App, { plugin });
+                app.mount(mountPoint);
+                dockApps.set(this, app);
             },
-            destroy: () => {
-                remoteNotesApp?.unmount();
-                remoteNotesApp = null;
+            destroy: function () {
+                dockApps.get(this)?.unmount();
+                dockApps.delete(this);
             },
         });
 
         this.setupSettings();
-        await this.settingUtils.load();
+        const loaded = await this.settingUtils.load() as Record<string, unknown> | null;
+        this.legacyTokens = {
+            "1": typeof loaded?.sykey === "string" ? loaded.sykey.trim() : "",
+            "2": typeof loaded?.sykey2 === "string" ? loaded.sykey2.trim() : "",
+        };
+        if (this.legacyTokens["1"] || this.legacyTokens["2"]) {
+            showMessage(this.i18n.legacyTokenWarning, 10000, "error");
+        }
         this.selectedTarget = String(this.settingUtils.get("Select") ?? "1") as TargetNumber;
         this.syncTargetConnection();
 
@@ -93,9 +97,9 @@ export default class SiYuanLinker extends Plugin {
     private setupSettings() {
         this.settingUtils = new SettingUtils({ plugin: this, name: STORAGE_NAME });
 
-        this.addTextSetting("sykey", this.i18n.targetToken1, this.i18n.targetToken1Description, "1");
+        this.addTextSetting("sysecret", this.i18n.targetTokenSecret1, this.i18n.targetTokenSecret1Description, "1");
         this.addTextSetting("syurl", this.i18n.targetUrl1, this.i18n.targetUrl1Description, "1");
-        this.addTextSetting("sykey2", this.i18n.targetToken2, this.i18n.targetToken2Description, "2");
+        this.addTextSetting("sysecret2", this.i18n.targetTokenSecret2, this.i18n.targetTokenSecret2Description, "2");
         this.addTextSetting("syurl2", this.i18n.targetUrl2, this.i18n.targetUrl2Description, "2");
 
         this.settingUtils.addItem({
@@ -104,10 +108,7 @@ export default class SiYuanLinker extends Plugin {
             type: "select",
             title: this.i18n.targetSource,
             description: this.i18n.targetSourceDescription,
-            options: {
-                1: this.i18n.target1,
-                2: this.i18n.target2,
-            },
+            options: { 1: this.i18n.target1, 2: this.i18n.target2 },
             action: {
                 callback: async () => {
                     this.selectedTarget = String(await this.settingUtils.takeAndSave("Select")) as TargetNumber;
@@ -122,47 +123,31 @@ export default class SiYuanLinker extends Plugin {
             type: "button",
             title: this.i18n.validateConnection,
             description: this.i18n.validateConnectionDescription,
-            button: {
-                label: this.i18n.validate,
-                callback: () => void this.validateConnection(),
-            },
+            button: { label: this.i18n.validate, callback: () => void this.validateConnection() },
         });
-
         this.settingUtils.addItem({
             key: "push",
             value: "",
             type: "button",
             title: this.i18n.transferAll,
             description: this.i18n.transferAllDescription,
-            button: {
-                label: this.i18n.transfer,
-                callback: () => void this.runPush(),
-            },
+            button: { label: this.i18n.transfer, callback: () => void this.runPush() },
         });
-
         this.settingUtils.addItem({
             key: "pull",
             value: "",
             type: "button",
             title: this.i18n.pullAll,
             description: this.i18n.pullAllDescription,
-            button: {
-                label: this.i18n.pull,
-                callback: () => void this.runPull(),
-            },
+            button: { label: this.i18n.pull, callback: () => void this.runPull() },
         });
 
+        this.addCheckboxSetting("preserveIds", false, this.i18n.preserveIds, this.i18n.preserveIdsDescription);
+        this.addCheckboxSetting("allowInsecureHttp", false, this.i18n.allowInsecureHttp, this.i18n.allowInsecureHttpDescription);
         this.addCheckboxSetting("islog", true, this.i18n.enableLogging, this.i18n.enableLoggingDescription);
-        this.addCheckboxSetting("readonlyText", false, this.i18n.markReadonly, this.i18n.markReadonlyDescription);
-        this.addCheckboxSetting("isrefresh", true, this.i18n.refreshAfterPull, this.i18n.refreshAfterPullDescription);
     }
 
-    private addTextSetting(
-        key: string,
-        title: string,
-        description: string,
-        targetNumber: TargetNumber,
-    ) {
+    private addTextSetting(key: string, title: string, description: string, targetNumber: TargetNumber) {
         this.settingUtils.addItem({
             key,
             value: "",
@@ -172,9 +157,7 @@ export default class SiYuanLinker extends Plugin {
             action: {
                 callback: async () => {
                     await this.settingUtils.takeAndSave(key);
-                    if (this.selectedTarget === targetNumber) {
-                        this.syncTargetConnection();
-                    }
+                    if (this.selectedTarget === targetNumber) this.syncTargetConnection();
                 },
             },
         });
@@ -187,12 +170,24 @@ export default class SiYuanLinker extends Plugin {
             type: "checkbox",
             title,
             description,
-            action: {
-                callback: async () => {
-                    await this.settingUtils.takeAndSave(key);
-                },
-            },
+            action: { callback: async () => { await this.settingUtils.takeAndSave(key); } },
         });
+    }
+
+    private readConfiguredSecret(targetNumber: TargetNumber): string {
+        const suffix = targetNumber === "1" ? "" : "2";
+        const secretName = String(this.settingUtils.get(`sysecret${suffix}`) ?? "").trim();
+        if (!secretName) return "";
+        try {
+            return this.getSecret(secretName).trim();
+        } catch (error) {
+            console.warn("Unable to read the configured SiYuan secret", error);
+            return "";
+        }
+    }
+
+    private resolveToken(targetNumber: TargetNumber): string {
+        return this.readConfiguredSecret(targetNumber) || this.legacyTokens[targetNumber] || "";
     }
 
     private syncTargetConnection() {
@@ -200,11 +195,9 @@ export default class SiYuanLinker extends Plugin {
         const rawUrl = String(this.settingUtils.get(`syurl${suffix}`) ?? "").trim();
         this.targetConnection = {
             url: rawUrl.replace(/\/+$/, ""),
-            token: String(this.settingUtils.get(`sykey${suffix}`) ?? "").trim(),
+            token: this.resolveToken(this.selectedTarget),
         };
-        for (const listener of this.targetChangeListeners) {
-            listener();
-        }
+        for (const listener of this.targetChangeListeners) listener();
     }
 
     public onTargetChange(listener: () => void): () => void {
@@ -213,17 +206,30 @@ export default class SiYuanLinker extends Plugin {
     }
 
     public getTargetConnection(): TargetConnection {
-        if (!this.targetConnection.url) {
-            throw new Error(this.i18n.configureTargetFirst);
-        }
-        return { ...this.targetConnection };
+        if (!this.targetConnection.url) throw new Error(this.i18n.configureTargetFirst);
+        return {
+            ...this.targetConnection,
+            url: validateTargetUrl(this.targetConnection.url, Boolean(this.settingUtils.get("allowInsecureHttp"))),
+        };
     }
 
     public getSelectedTargetLabel(): string {
         return this.selectedTarget === "1" ? this.i18n.target1 : this.i18n.target2;
     }
 
-    private readonly handleDocumentSwitch = (event: CustomEvent) => {
+    private getTransferMode(): TransferMode {
+        return this.settingUtils.get("preserveIds") ? "preserve-ids" : "safe";
+    }
+
+    private confirmSelectiveTransferScope(): boolean {
+        return window.confirm(
+            this.getTransferMode() === "preserve-ids"
+                ? this.i18n.preserveTransferWarning
+                : this.i18n.safeTransferScopeWarning,
+        );
+    }
+
+    private readonly handleDocumentSwitch = (event: DocumentEvent) => {
         this.currentDocId = event.detail?.protyle?.block?.id ?? null;
     };
 
@@ -241,92 +247,57 @@ export default class SiYuanLinker extends Plugin {
             label: this.i18n.transferCurrentNote,
             click: () => void this.runSingleTransfer(),
         });
-        menu.open({
-            x: rect?.right ?? 0,
-            y: rect?.bottom ?? 0,
-            isLeft: true,
-        });
+        menu.open({ x: rect?.right ?? 0, y: rect?.bottom ?? 0, isLeft: true });
     }
 
     private async validateConnection() {
-        let target: TargetConnection;
         try {
-            target = this.getTargetConnection();
-        } catch {
-            showMessage(this.i18n.configureTargetFirst, 6000, "error");
-            return;
+            const target = this.getTargetConnection();
+            showMessage(this.i18n.validating, 3000, "info");
+            const [version, notebooks] = await Promise.all([getSystemVersion(target), listNotebooks(target)]);
+            showMessage(
+                this.i18n.connectionSucceededVersion
+                    .replace("${version}", version)
+                    .replace("${count}", String(notebooks.length)),
+                6000,
+                "info",
+            );
+            if (this.readConfiguredSecret(this.selectedTarget)) {
+                const legacyKey = this.selectedTarget === "1" ? "sykey" : "sykey2";
+                this.legacyTokens[this.selectedTarget] = "";
+                this.settingUtils.removePersistedKey(legacyKey);
+                await this.settingUtils.save();
+            }
+        } catch (error) {
+            this.reportError(this.i18n.connectionFailed, error);
         }
-        showMessage(this.i18n.validating, 3000, "info");
-        const connected = await isconnect(target);
-        showMessage(
-            connected ? this.i18n.connectionSucceeded : this.i18n.connectionFailed,
-            6000,
-            connected ? "info" : "error",
-        );
     }
 
     private async runSingleTransfer() {
-        const docId = this.currentDocId;
-        if (!docId) {
+        if (!this.currentDocId) {
             showMessage(this.i18n.noCurrentDocument, 6000, "error");
             return;
         }
-
+        if (!this.confirmSelectiveTransferScope()) return;
         try {
             const target = this.getTargetConnection();
             showMessage(this.i18n.transferring, -1, "info", this.i18n.singleTransfer);
-            const location = await getDocumentLocation(docId);
-            const noteContent = await getNoteData(location.path);
-            const outputContent = this.settingUtils.get("readonlyText")
-                ? markTransferredReadonly(noteContent)
-                : noteContent;
-
-            await putTextFile(location.path, outputContent, target);
-            await transferDatabaseResources(noteContent, undefined, target);
-            await setNotebookConf(location.notebookId, await getNotebookName(location.notebookId), target);
-
-            const resources = await getResourceLinks(docId);
-            for (const resourcePath of resources) {
-                await putBinaryFile(resourcePath, await downloadFile(resourcePath), target);
-            }
-            await refreshFileTree(target);
-            showMessage(this.i18n.transferCompleted, 6000, "info", this.i18n.singleTransfer);
+            const result = await transferDocuments([this.currentDocId], this.getTransferMode(), undefined, target);
+            this.showTransferResult(this.i18n.transferCompleted, result.warnings, this.i18n.singleTransfer);
         } catch (error) {
             this.reportError(this.i18n.transferFailed, error);
         }
     }
 
     public async pullNote(docIds: string[]) {
-        if (!docIds.length) return;
+        if (!docIds.length || !this.confirmSelectiveTransferScope()) return;
         try {
             const target = this.getTargetConnection();
             showMessage(this.i18n.pulling, -1, "info", this.i18n.multipleTransfer);
-            for (const docId of docIds) {
-                const location = await getDocumentLocation(docId, target);
-                const noteContent = await getNoteData(location.path, target);
-                const outputContent = this.settingUtils.get("readonlyText")
-                    ? markTransferredReadonly(noteContent)
-                    : noteContent;
-
-                await putTextFile(location.path, outputContent);
-                await transferDatabaseResources(noteContent, target, undefined);
-                await setNotebookConf(
-                    location.notebookId,
-                    await getNotebookName(location.notebookId, target),
-                );
-
-                const resources = await getResourceLinks(docId, target);
-                for (const resourcePath of resources) {
-                    await putBinaryFile(resourcePath, await downloadFile(resourcePath, target));
-                }
-            }
-            if (this.settingUtils.get("isrefresh")) {
-                await refreshFileTree();
-            }
-            showMessage(
-                this.i18n.notesPulled.replace("${count}", String(docIds.length)),
-                6000,
-                "info",
+            const result = await transferDocuments(docIds, this.getTransferMode(), target, undefined);
+            this.showTransferResult(
+                this.i18n.notesPulled.replace("${count}", String(result.count)),
+                result.warnings,
                 this.i18n.multipleTransfer,
             );
         } catch (error) {
@@ -335,27 +306,35 @@ export default class SiYuanLinker extends Plugin {
     }
 
     private async runPush() {
+        if (!window.confirm(this.i18n.fullTransferWarning)) return;
         try {
             const target = this.getTargetConnection();
             showMessage(this.i18n.transferring, -1, "info", this.i18n.transferAll);
-            const archivePath = await exportAllData();
-            await importAllData(await downloadFile(archivePath), target);
+            await transferAllData(undefined, target);
             showMessage(this.i18n.transferCompleted, 6000, "info", this.i18n.transferAll);
         } catch (error) {
-            this.reportError(this.i18n.transferFailed, error);
+            this.reportError(this.i18n.transferFailedPartial, error);
         }
     }
 
     private async runPull() {
+        if (!window.confirm(this.i18n.fullPullWarning)) return;
         try {
             const target = this.getTargetConnection();
             showMessage(this.i18n.pulling, -1, "info", this.i18n.pullAll);
-            const archivePath = await exportAllData(target);
-            await importAllData(await downloadFile(archivePath, target));
+            await transferAllData(target, undefined);
             showMessage(this.i18n.pullCompleted, 6000, "info", this.i18n.pullAll);
         } catch (error) {
-            this.reportError(this.i18n.pullFailed, error);
+            this.reportError(this.i18n.pullFailedPartial, error);
         }
+    }
+
+    private showTransferResult(message: string, warnings: string[], title: string) {
+        if (warnings.length) {
+            showMessage(`${message}. ${this.i18n.fileTreeReloadWarning}`, 10000, "error", title);
+            return;
+        }
+        showMessage(message, 6000, "info", title);
     }
 
     private reportError(prefix: string, error: unknown) {

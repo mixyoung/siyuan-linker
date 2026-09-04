@@ -8,6 +8,7 @@
  */
 
 import { Plugin, Setting } from 'siyuan';
+import { collectPassthroughData, mergeSettingsData } from './setting-data';
 
 
 /**
@@ -82,6 +83,7 @@ export class SettingUtils {
 
     settings: Map<string, ISettingUtilsItem> = new Map();
     elements: Map<string, HTMLElement> = new Map();
+    private passthroughData: Record<string, any> = {};
 
     constructor(args: {
         plugin: Plugin,
@@ -118,8 +120,8 @@ export class SettingUtils {
 
     async load() {
         let data = await this.plugin.loadData(this.file);
-        console.debug('Load config:', data);
         if (data) {
+            this.passthroughData = collectPassthroughData(data, this.settings.keys());
             for (let [key, item] of this.settings) {
                 item.value = data?.[key] ?? item.value;
                 this.updateElementFromValue(key);
@@ -131,8 +133,7 @@ export class SettingUtils {
 
     async save(data?: any) {
         data = data ?? this.dump();
-        await this.plugin.saveData(this.file, this.dump());
-        console.debug('Save config:', data);
+        await this.plugin.saveData(this.file, data);
         return data;
     }
 
@@ -232,12 +233,11 @@ export class SettingUtils {
      * @returns object
      */
     dump(): Object {
-        let data: any = {};
-        for (let [key, item] of this.settings) {
-            if (item.type === 'button') continue;
-            data[key] = item.value;
-        }
-        return data;
+        return mergeSettingsData(this.passthroughData, this.settings);
+    }
+
+    removePersistedKey(key: string) {
+        delete this.passthroughData[key];
     }
 
     addItem(item: ISettingUtilsItem) {
