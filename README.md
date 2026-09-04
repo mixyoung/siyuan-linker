@@ -1,46 +1,225 @@
 # SiYuan Linker
 
-Transfer notes and workspace data between local and remote SiYuan instances. A common setup is a desktop workspace connected to a Docker-hosted SiYuan server.
+Transfer notes and workspace data between independent SiYuan instances.
 
-> Since v0.3.0, the technical plugin ID is `siyuan-linker`. Settings from the former `siyuan-link` plugin are not migrated automatically and must be configured again.
+SiYuan Linker is designed for workflows such as:
 
-> This plugin reads and writes SiYuan workspace files. Back up both workspaces and verify the target settings before transferring notes or all data.
+- Editing on SiYuan Desktop while publishing from a Docker-hosted instance.
+- Capturing web content on a remote instance and pulling it into a local workspace.
+- Moving selected notes and assets between separate workspaces.
+
+> [!WARNING]
+> SiYuan Linker uses SiYuan kernel file and data-import APIs. Back up both the local and target workspaces before transferring data. Never run a full transfer or pull operation unless you have confirmed the direction and destination.
 
 ## Features
 
-- Transfer the current note, its assets, and attribute-view data while preserving its path.
-- Transfer all local workspace data to the target instance.
-- Pull all target workspace data into the local instance.
-- Browse target notebooks in a lazy-loaded document tree and pull multiple selected notes.
-- Configure and switch between two target instances.
-- Optionally add a read-only marker to transferred notes.
+### Transfer the current note
 
-DeepSeek/Kimi web docks and AList features have been removed. SiYuan Linker now focuses on note transfer between SiYuan instances.
+Transfer the currently open local note to the selected target while preserving its document path and notebook structure where possible. The operation includes:
 
-## Configuration
+- The `.sy` document data
+- Assets referenced by the document
+- Attribute-view data used by the document
+- Notebook name and open state
 
-Enter the target SiYuan URL and API token in the plugin settings. Do not add a trailing slash to the URL:
+An optional read-only marker can be added to transferred documents when the target is intended for publishing or read-only access.
 
-- Correct: `http://siyuan.example.com`
-- Incorrect: `http://siyuan.example.com/`
+### Pull selected remote notes
 
-Use **Validate connection** after saving the settings.
+The **Remote notes** dock provides a browsable document tree for the selected target:
+
+- Switch between remote notebooks
+- Expand child documents on demand
+- Select multiple documents
+- Pull selected documents and their resources into the local workspace
+
+The tree is loaded lazily, so child documents are requested only when their parent is expanded.
+
+### Transfer all workspace data
+
+Plugin settings provide two full-data operations:
+
+- **Transfer all data:** export the local workspace data and import it into the target.
+- **Pull all data:** export the target workspace data and import it into the local workspace.
+
+Full-data operations use SiYuan's export and import APIs. They are intended for initialization or migration, not real-time synchronization.
+
+### Two target configurations
+
+Store two target SiYuan server configurations and switch between them in plugin settings.
+
+Each target contains:
+
+- A SiYuan server URL
+- An API token
+
+When the selected target changes, the Remote notes dock clears stale selections and reloads from the new target.
+
+## Installation
+
+### Install from Marketplace
+
+In SiYuan, open:
+
+`Settings → Marketplace → Plugins`
+
+Search for **SiYuan Linker** and install it.
+
+### Manual installation
+
+1. Download `package.zip` from the project releases.
+2. Extract it into the SiYuan workspace directory:
+
+   ```text
+   data/plugins/siyuan-linker
+   ```
+
+3. Restart SiYuan or reload the plugin.
+
+## Target configuration
+
+1. Obtain the API token from the target SiYuan instance.
+2. Open SiYuan Linker settings.
+3. Enter the target URL and API token.
+4. Select the target configuration to use.
+5. Click **Validate connection**.
+
+Example target URLs:
+
+```text
+http://127.0.0.1:6806
+https://siyuan.example.com
+```
+
+The plugin removes trailing slashes automatically, but using the full URL without a trailing slash is recommended.
+
+If the target is behind a reverse proxy, make sure the proxy supports:
+
+- SiYuan `/api/*` requests
+- Large file uploads and downloads
+- An appropriate cross-origin policy
+- Sufficient request timeouts
 
 ## Usage
 
-- **Current note:** open a document, click the Data transfer icon in the top bar, and choose **Transfer current note**.
-- **All data:** use **Transfer all data** or **Pull all data** in plugin settings.
-- **Selected notes:** open the Remote notes dock, choose a notebook, expand the tree, select documents, and click **Pull notes**.
+### Transfer the current note
 
-## History
+1. Open the note to transfer.
+2. Click the **Data transfer** icon in the top toolbar.
+3. Select **Transfer current note**.
+4. Wait for the completion notification.
 
-- v0.1.x introduced single-note and full-data transfer, multiple targets, and the remote file tree.
-- v0.2.0–v0.2.5 included AList features; they were split out and removed in v0.2.7.
-- v0.2.6 introduced DeepSeek/Kimi web docks; they were removed in later development.
-- v0.2.7 removed AList functionality.
+### Pull selected notes
 
-## Feedback and license
+1. Open the **Remote notes** dock.
+2. Select a remote notebook.
+3. Expand the document tree and select one or more documents.
+4. Click **Pull notes**.
 
-Report issues at <https://github.com/mixyoung/siyuan-linker>.
+### Transfer or pull all data
 
-Licensed under the MIT License. Do not use this software for unlawful activities; the author is not responsible for consequences arising from its use.
+Open plugin settings and use **Transfer all data** or **Pull all data**.
+
+Confirm the direction before proceeding:
+
+```text
+Transfer all data: local → target
+Pull all data:     target → local
+```
+
+## Behavior and limitations
+
+- This plugin performs one-way data transfers; it is not a real-time two-way sync engine.
+- It does not merge document content or resolve editing conflicts.
+- Existing files at the destination path may be overwritten by SiYuan's file APIs.
+- Regular document assets and attribute-view data are transferred with the document.
+- Network interruptions, reverse-proxy limits, or insufficient target permissions can cause partial failures.
+- Avoid editing the same document on both instances while it is being transferred.
+- Mobile and browser frontends are enabled in the manifest, but desktop is recommended for large transfers.
+
+## Privacy and security
+
+- API tokens are stored only in the current SiYuan workspace's plugin settings.
+- Do not publish settings files, logs, or screenshots containing tokens.
+- Use HTTPS for remote SiYuan instances whenever possible.
+- Do not transfer private notes to an untrusted target.
+- The plugin does not intentionally send data to services other than the configured target.
+
+## Development
+
+Requirements:
+
+- Node.js 20 or later
+- pnpm 10
+- SiYuan 3.0.12 or later
+
+Install dependencies:
+
+```bash
+pnpm install
+```
+
+Run type checking:
+
+```bash
+pnpm typecheck
+```
+
+Validate project metadata and locale files:
+
+```bash
+pnpm validate
+```
+
+Create a production build:
+
+```bash
+pnpm build
+```
+
+Build outputs:
+
+```text
+dist/
+package.zip
+```
+
+Start watch mode:
+
+```bash
+pnpm dev
+```
+
+Create a development link:
+
+```bash
+pnpm make-link
+```
+
+## Project structure
+
+```text
+src/index.ts                 Plugin entry point, settings, and transfer orchestration
+src/myapi.ts                 SiYuan file and data-transfer APIs
+src/FileTreeApi.ts           Remote document-tree API
+src/app.vue                  Remote notes dock
+src/MyVue/FileTree.vue       Recursive document-tree component
+public/i18n/                 English and Chinese locale files
+scripts/validate_project.js  Project consistency checks
+```
+
+## Reporting issues
+
+When opening an issue, include the following where possible:
+
+- SiYuan version
+- Plugin version
+- Local and target deployment types
+- Operation type: current note, selected-note pull, or full-data operation
+- Redacted error output and reproduction steps
+
+Project repository: <https://github.com/mixyoung/siyuan-linker>
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
