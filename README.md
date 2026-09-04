@@ -1,225 +1,227 @@
 # SiYuan Linker
 
-Transfer notes and workspace data between independent SiYuan instances.
+**简体中文** · [English](README_en_US.md)
 
-SiYuan Linker is designed for workflows such as:
+连接不同的思源笔记实例，在本地端与远程端之间传输笔记和工作空间数据。
 
-- Editing on SiYuan Desktop while publishing from a Docker-hosted instance.
-- Capturing web content on a remote instance and pulling it into a local workspace.
-- Moving selected notes and assets between separate workspaces.
+适用于以下场景：
+
+- 桌面版思源负责编辑，Docker 版思源负责发布或只读展示。
+- 远程思源负责网页剪藏，本地思源定期拉取整理。
+- 在两个独立工作空间之间按需搬运笔记和附件。
 
 > [!WARNING]
-> SiYuan Linker uses SiYuan kernel file and data-import APIs. Back up both the local and target workspaces before transferring data. Never run a full transfer or pull operation unless you have confirmed the direction and destination.
+> SiYuan Linker 会调用思源内核文件与数据导入接口。执行传输前，请备份本地端和目标端数据。尤其是“全量传输”和“全量拉取”，不应在未确认目标工作空间的情况下使用。
 
-## Features
+## 功能
 
-### Transfer the current note
+### 当前笔记传输
 
-Transfer the currently open local note to the selected target while preserving its document path and notebook structure where possible. The operation includes:
+将当前打开的笔记从本地端传输到目标端，并尽量保持原有路径和笔记本结构。传输内容包括：
 
-- The `.sy` document data
-- Assets referenced by the document
-- Attribute-view data used by the document
-- Notebook name and open state
+- `.sy` 文档数据
+- 文档引用的附件资源
+- 文档使用的属性视图数据
+- 笔记本名称和开启状态
 
-An optional read-only marker can be added to transferred documents when the target is intended for publishing or read-only access.
+可选为传输后的文档添加只读标记，适合将远程端作为展示或发布端使用。
 
-### Pull selected remote notes
+### 远程笔记选择性拉取
 
-The **Remote notes** dock provides a browsable document tree for the selected target:
+右侧“目标源笔记”面板提供远程文档树：
 
-- Switch between remote notebooks
-- Expand child documents on demand
-- Select multiple documents
-- Pull selected documents and their resources into the local workspace
+- 切换远程笔记本
+- 按需展开子文档
+- 多选远程文档
+- 将选中文档及其资源拉取到本地
 
-The tree is loaded lazily, so child documents are requested only when their parent is expanded.
+文档树采用懒加载，只有在展开节点时才请求其子文档，适合较大的笔记本。
 
-### Transfer all workspace data
+### 全量数据传输
 
-Plugin settings provide two full-data operations:
+插件设置中提供：
 
-- **Transfer all data:** export the local workspace data and import it into the target.
-- **Pull all data:** export the target workspace data and import it into the local workspace.
+- **全量传输**：导出本地工作空间数据并导入目标端。
+- **全量拉取**：导出目标端工作空间数据并导入本地端。
 
-Full-data operations use SiYuan's export and import APIs. They are intended for initialization or migration, not real-time synchronization.
+全量操作使用思源的数据导出与导入接口，适合初始化或整体迁移，不是实时同步功能。
 
-### Two target configurations
+### 多目标源
 
-Store two target SiYuan server configurations and switch between them in plugin settings.
+可以保存两组目标思源服务配置，并在插件设置中切换当前目标源。
 
-Each target contains:
+每组配置包括：
 
-- A SiYuan server URL
-- An API token
+- 思源服务地址
+- API Token
 
-When the selected target changes, the Remote notes dock clears stale selections and reloads from the new target.
+切换目标源后，远程笔记面板会自动清空旧选择并重新加载。
 
-## Installation
+## 安装
 
-### Install from Marketplace
+### 从集市安装
 
-In SiYuan, open:
+在思源笔记中打开：
 
-`Settings → Marketplace → Plugins`
+`设置 → 集市 → 插件`
 
-Search for **SiYuan Linker** and install it.
+搜索 **SiYuan Linker** 并安装。
 
-### Manual installation
+### 手动安装
 
-1. Download `package.zip` from the project releases.
-2. Extract it into the SiYuan workspace directory:
+1. 下载项目发布页中的 `package.zip`。
+2. 解压到思源工作空间：
 
    ```text
    data/plugins/siyuan-linker
    ```
 
-3. Restart SiYuan or reload the plugin.
+3. 重启思源或重新加载插件。
 
-## Target configuration
+## 配置目标源
 
-1. Obtain the API token from the target SiYuan instance.
-2. Open SiYuan Linker settings.
-3. Enter the target URL and API token.
-4. Select the target configuration to use.
-5. Click **Validate connection**.
+1. 在目标思源实例中获取 API Token。
+2. 打开 SiYuan Linker 插件设置。
+3. 填写目标源网址和 API Token。
+4. 选择要使用的目标源。
+5. 点击“验证服务连接”。
 
-Example target URLs:
+目标源网址示例：
 
 ```text
 http://127.0.0.1:6806
 https://siyuan.example.com
 ```
 
-The plugin removes trailing slashes automatically, but using the full URL without a trailing slash is recommended.
+插件会自动移除网址末尾的 `/`，但仍建议填写不带尾部斜杠的完整地址。
 
-If the target is behind a reverse proxy, make sure the proxy supports:
+如果目标思源通过反向代理访问，请确保代理允许以下内容：
 
-- SiYuan `/api/*` requests
-- Large file uploads and downloads
-- An appropriate cross-origin policy
-- Sufficient request timeouts
+- 思源 `/api/*` 请求
+- 较大的文件上传和下载
+- 正确的跨域访问策略
+- 足够长的请求超时时间
 
-## Usage
+## 使用方法
 
-### Transfer the current note
+### 传输当前笔记
 
-1. Open the note to transfer.
-2. Click the **Data transfer** icon in the top toolbar.
-3. Select **Transfer current note**.
-4. Wait for the completion notification.
+1. 打开需要传输的笔记。
+2. 点击顶部工具栏中的“数据传输”图标。
+3. 选择“传输当前笔记”。
+4. 等待传输完成提示。
 
-### Pull selected notes
+### 拉取指定笔记
 
-1. Open the **Remote notes** dock.
-2. Select a remote notebook.
-3. Expand the document tree and select one or more documents.
-4. Click **Pull notes**.
+1. 打开右侧“目标源笔记”面板。
+2. 选择远程笔记本。
+3. 展开文档树并选择一个或多个文档。
+4. 点击“拉取笔记”。
 
-### Transfer or pull all data
+### 全量传输或拉取
 
-Open plugin settings and use **Transfer all data** or **Pull all data**.
+打开插件设置，使用“全量传输”或“全量拉取”按钮。
 
-Confirm the direction before proceeding:
+执行前请确认数据方向：
 
 ```text
-Transfer all data: local → target
-Pull all data:     target → local
+全量传输：本地端 → 目标端
+全量拉取：目标端 → 本地端
 ```
 
-## Behavior and limitations
+## 工作方式与限制
 
-- This plugin performs one-way data transfers; it is not a real-time two-way sync engine.
-- It does not merge document content or resolve editing conflicts.
-- Existing files at the destination path may be overwritten by SiYuan's file APIs.
-- Regular document assets and attribute-view data are transferred with the document.
-- Network interruptions, reverse-proxy limits, or insufficient target permissions can cause partial failures.
-- Avoid editing the same document on both instances while it is being transferred.
-- Mobile and browser frontends are enabled in the manifest, but desktop is recommended for large transfers.
+- 本插件执行的是单向数据传输，不是双向实时同步。
+- 插件不会进行文档内容合并或冲突解决。
+- 如果目标位置已经存在同路径文件，思源文件接口可能覆盖原数据。
+- 文档引用的普通附件和属性视图数据会随文档传输。
+- 网络中断、反向代理限制或目标端权限不足都可能导致部分传输失败。
+- 不建议同时在两端编辑同一篇正在传输的文档。
+- 移动端和浏览器端虽在插件清单中启用，但涉及大量数据时推荐使用桌面端操作。
 
-## Privacy and security
+## 隐私与安全
 
-- API tokens are stored only in the current SiYuan workspace's plugin settings.
-- Do not publish settings files, logs, or screenshots containing tokens.
-- Use HTTPS for remote SiYuan instances whenever possible.
-- Do not transfer private notes to an untrusted target.
-- The plugin does not intentionally send data to services other than the configured target.
+- API Token 仅保存在当前思源工作空间的插件设置中。
+- 请勿将包含 Token 的设置文件、日志或截图公开。
+- 建议为远程思源启用 HTTPS。
+- 不要向不受信任的思源实例传输私人笔记。
+- 插件不会主动将数据发送到配置目标以外的第三方服务。
 
-## Development
+## 开发
 
-Requirements:
+环境要求：
 
-- Node.js 20 or later
+- Node.js 20 或更高版本
 - pnpm 10
-- SiYuan 3.0.12 or later
+- 思源笔记 3.0.12 或更高版本
 
-Install dependencies:
+安装依赖：
 
 ```bash
 pnpm install
 ```
 
-Run type checking:
+类型检查：
 
 ```bash
 pnpm typecheck
 ```
 
-Validate project metadata and locale files:
+校验项目元数据和语言包：
 
 ```bash
 pnpm validate
 ```
 
-Create a production build:
+生产构建：
 
 ```bash
 pnpm build
 ```
 
-Build outputs:
+构建结果：
 
 ```text
 dist/
 package.zip
 ```
 
-Start watch mode:
+监听构建：
 
 ```bash
 pnpm dev
 ```
 
-Create a development link:
+开发链接脚本：
 
 ```bash
 pnpm make-link
 ```
 
-## Project structure
+## 项目结构
 
 ```text
-src/index.ts                 Plugin entry point, settings, and transfer orchestration
-src/myapi.ts                 SiYuan file and data-transfer APIs
-src/FileTreeApi.ts           Remote document-tree API
-src/app.vue                  Remote notes dock
-src/MyVue/FileTree.vue       Recursive document-tree component
-public/i18n/                 English and Chinese locale files
-scripts/validate_project.js  Project consistency checks
+src/index.ts                 插件入口、设置与传输流程
+src/myapi.ts                 思源文件和数据传输接口
+src/FileTreeApi.ts           远程文档树接口
+src/app.vue                  远程笔记面板
+src/MyVue/FileTree.vue       递归文档树组件
+public/i18n/                 中英文语言包
+scripts/validate_project.js  项目一致性校验
 ```
 
-## Reporting issues
+## 问题反馈
 
-When opening an issue, include the following where possible:
+如遇到问题，请在提交 Issue 时尽量提供：
 
-- SiYuan version
-- Plugin version
-- Local and target deployment types
-- Operation type: current note, selected-note pull, or full-data operation
-- Redacted error output and reproduction steps
+- 思源版本
+- 插件版本
+- 本地端和目标端部署方式
+- 操作类型（单笔记、选择性拉取或全量操作）
+- 已脱敏的错误信息和复现步骤
 
-Project repository: <https://github.com/mixyoung/siyuan-linker>
+项目地址：<https://github.com/mixyoung/siyuan-linker>
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+本项目使用 [MIT License](LICENSE)。

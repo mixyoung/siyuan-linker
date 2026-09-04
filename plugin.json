@@ -23,8 +23,8 @@
     "zh_CN": "在本地与远程思源笔记服务之间传输笔记和工作空间数据。"
   },
   "readme": {
-    "en_US": "README.md",
-    "zh_CN": "README_zh_CN.md"
+    "en_US": "README_en_US.md",
+    "zh_CN": "README.md"
   },
   "funding": {
     "custom": [
