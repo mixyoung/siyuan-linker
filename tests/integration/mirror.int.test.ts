@@ -169,6 +169,30 @@ suite("live SiYuan v3.8.2 exact mirror", { timeout: 240_000 }, () => {
         expect(status.pending).toBe(false);
     });
 
+    it("resolves a first-sync conflict only through explicit source adoption", async () => {
+        // Simulate the user's stuck state: the destination holds content from
+        // an earlier interrupted transfer and the fresh pairing has no baseline.
+        await kernel(B, "/api/block/appendBlock", { parentID: parentId, dataType: "markdown", data: "leftover destination edit" });
+        await settle();
+        await expectVisible(parentId, "leftover destination edit", B);
+        const error = await mirrorDocumentsExact([parentId], A, B).catch((value: unknown) => value);
+        expect(error).toBeInstanceOf(MirrorOperationError);
+        expect((error as MirrorOperationError).details.state).toBe("before-write");
+        expect((error as MirrorOperationError).details.firstSyncConflicts).toEqual([parentId]);
+        expect(await getBlockDOM(parentId, B)).toContain("leftover destination edit");
+        expect((await inspectMirrorPair(A, B)).pending).toBe(false);
+
+        const result = await mirrorDocumentsExact([parentId], A, B, { adoptFirstBaselineConflicts: true }).catch((value: unknown) => {
+            throw new Error(withDetails(value));
+        });
+        expect(result.count).toBe(1);
+        expect(await blockIdsUnder(parentId, A)).toEqual(await blockIdsUnder(parentId, B));
+        expect(await getBlockDOM(parentId, B)).not.toContain("leftover destination edit");
+        const status = await inspectMirrorPair(A, B);
+        expect(status.valid).toBe(true);
+        expect(status.pending).toBe(false);
+    });
+
     it("creates a missing child document with the exact source ID and nested path", async () => {
         const parentHPath = await getHPathByID(parentId, A);
         childId = nextId();

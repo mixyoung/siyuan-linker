@@ -117,7 +117,7 @@ describe("preserve-ID transfer", () => {
             .resolves.toEqual({ count: 1, warnings: ["reload warning"] });
 
         expect(api.getSystemVersion).toHaveBeenCalledTimes(2);
-        expect(mirror.mirrorDocumentsExact).toHaveBeenCalledWith(["20260904120000-abcdefg"], undefined, remote);
+        expect(mirror.mirrorDocumentsExact).toHaveBeenCalledWith(["20260904120000-abcdefg"], undefined, remote, undefined);
         expect(api.writeFile).not.toHaveBeenCalled();
         expect(api.updateIndexes).not.toHaveBeenCalled();
     });

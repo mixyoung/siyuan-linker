@@ -113,6 +113,8 @@ export interface MirrorErrorDetails {
     cause: string;
     rollbackErrors?: string[];
     residualAssetPaths?: string[];
+    /** Document IDs whose no-baseline (first-sync) content conflicts blocked the batch. */
+    firstSyncConflicts?: string[];
 }
 
 export class MirrorOperationError extends Error {

@@ -105,15 +105,25 @@ export async function transferDocumentsSafely(
     return { count: transferred, warnings: await reloadWarning(destination) };
 }
 
+export interface SelectiveTransferOptions {
+    /**
+     * Exact mirror only: overwrite destination content for documents with
+     * no usable baseline that differ from the source. The UI must collect
+     * an explicit user confirmation before passing this.
+     */
+    adoptFirstBaselineConflicts?: boolean;
+}
+
 export async function transferDocumentsPreservingIds(
     docIds: string[],
     source?: TargetConnection,
     destination?: TargetConnection,
+    options?: SelectiveTransferOptions,
 ): Promise<TransferResult> {
     const uniqueDocIds = [...new Set(docIds)];
     if (!uniqueDocIds.length) return { count: 0, warnings: [] };
     await assertCompatible(source, destination, true);
-    const result = await mirrorDocumentsExact(uniqueDocIds, source, destination);
+    const result = await mirrorDocumentsExact(uniqueDocIds, source, destination, options);
     return { count: result.count, warnings: result.warnings };
 }
 
@@ -122,9 +132,10 @@ export async function transferDocuments(
     mode: TransferMode,
     source?: TargetConnection,
     destination?: TargetConnection,
+    options?: SelectiveTransferOptions,
 ): Promise<TransferResult> {
     return mode === "preserve-ids"
-        ? transferDocumentsPreservingIds(docIds, source, destination)
+        ? transferDocumentsPreservingIds(docIds, source, destination, options)
         : transferDocumentsSafely(docIds, source, destination);
 }
 

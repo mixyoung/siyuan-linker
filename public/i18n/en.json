@@ -111,5 +111,6 @@
   "mirrorOperationId": "Operation ID",
   "rollbackErrors": "Rollback errors",
   "residualAssetCleanup": "Residual asset paths retained for manual cleanup",
-  "resetPairingPendingConfirm": "A pending mirror operation exists on one or both workspaces. Force reset discards that safety record (an archive copy is kept in both plugin data folders), and any partially applied mirror writes are left as they are. Verify the destination workspace before pairing again. Force reset now?"
+  "resetPairingPendingConfirm": "A pending mirror operation exists on one or both workspaces. Force reset discards that safety record (an archive copy is kept in both plugin data folders), and any partially applied mirror writes are left as they are. Verify the destination workspace before pairing again. Force reset now?",
+  "firstSyncConflictConfirm": "First-sync conflict: the destination document already exists with different content and no sync baseline exists (for example after re-pairing or an interrupted transfer). Overwrite the destination with the LOCAL version and record it as the sync baseline? The destination's current content for the affected document(s) will be replaced and cannot be recovered from the plugin."
 }

@@ -31,7 +31,7 @@ Exact-ID mirror currently:
 - aborts rather than merges when the destination has independently changed;
 - reloads the destination file tree after a verified write when the kernel permits it.
 
-**First transfer without a baseline is conservative:** if a destination document with the same ID already exists, it is accepted only when its complete fingerprint already matches the source. Otherwise the transfer is treated as a conflict. A shared baseline is recorded only after both ends verify the same final state.
+**First transfer without a baseline is conservative:** if a destination document with the same ID already exists, it is accepted only when its complete fingerprint already matches the source. Otherwise the transfer is treated as a conflict. A shared baseline is recorded only after both ends verify the same final state. When the plugin reports this first-sync conflict, it offers an explicit, confirmed overwrite of the affected documents with the source version (adopt-source) to rebuild the baseline; with a baseline recorded, destination-side edits still abort as conflicts.
 
 ### Independent copy
 
