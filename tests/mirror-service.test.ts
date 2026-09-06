@@ -45,13 +45,15 @@ import {
     extractBlockIds,
     filterManagedRootAttrs,
     mirrorDocumentsExact,
+    normalizeDom,
 } from "../src/mirror-service";
-import { MirrorOperationError, type MirrorDocumentBaseline } from "../src/mirror-types";
+import { BASELINE_HASH_VERSION, MirrorOperationError, type MirrorDocumentBaseline } from "../src/mirror-types";
 
 const id = "20260904120000-abcdefg";
 const childId = "20260904120100-hijklmn";
 const remote = { url: "https://example.com", token: "secret" };
 const baseline = (fingerprint: string): MirrorDocumentBaseline => ({
+    hashVersion: 2,
     documentId: id, notebookId: "box", path: `data/box/${id}.sy`, hpath: "/Doc",
     domSha256: fingerprint, identityRowsSha256: fingerprint, attrsSha256: fingerprint, assetsSha256: fingerprint,
     fingerprint, blockIds: [id], assets: [],
@@ -105,6 +107,15 @@ describe("mirror baseline and conflict rules", () => {
         expect(classifyThreeWay(baseline("old"), baseline("new"), baseline("old"))).toBe("destination-changed");
         expect(classifyThreeWay(baseline("same-new"), baseline("same-new"), baseline("old"))).toBe("converged");
         expect(classifyThreeWay(baseline("source-new"), baseline("destination-new"), baseline("old"))).toBe("conflict");
+    });
+
+    it("normalizes volatile kernel metadata out of DOM identity", () => {
+        const withUpdated = `<div data-node-id="${id}" updated="20260906120000"><div data-node-id="${childId}" updated="20260906120101">text</div></div>`;
+        const refreshed = withUpdated.replace(/updated="\d{14}"/g, 'updated="20260907111111"');
+        expect(refreshed).not.toBe(withUpdated);
+        expect(normalizeDom(refreshed)).toBe(normalizeDom(withUpdated));
+        expect(normalizeDom(withUpdated)).not.toContain("updated=");
+        expect(normalizeDom("")).toBe("");
     });
 });
 

@@ -24,6 +24,7 @@ import {
 } from "./siyuan-api";
 import {
     MirrorOperationError,
+    BASELINE_HASH_VERSION,
     type MirrorConflictClassification,
     type MirrorDocumentBaseline,
     type MirrorDocumentSnapshot,
@@ -108,6 +109,18 @@ function normalizeIal(ial: string): string {
     return pairs.map((pair) => `${pair.key}="${pair.value}"`).join(" ");
 }
 
+// The kernel refreshes per-node `updated` timestamps on its own schedule
+// (CreatedUpdated/RefreshUpdated during transactions), so rendered DOM can
+// differ across instances purely in volatile metadata. Identity hashing and
+// ownership comparisons use the DOM with those attributes removed.
+export function normalizeDom(dom: string): string {
+    return (dom ?? "").replace(/\s+updated="\d{14}"/g, "");
+}
+
+function sameRenderedDom(left: string, right: string): boolean {
+    return left === right || normalizeDom(left) === normalizeDom(right);
+}
+
 async function buildBaseline(
     documentId: string,
     notebookId: string,
@@ -131,16 +144,19 @@ async function buildBaseline(
     if (!blockIds.includes(documentId)) blockIds.push(documentId);
     blockIds.sort();
     const [domSha256, identityRowsSha256, attrsSha256, assetsSha256] = await Promise.all([
-        sha256(dom), sha256(JSON.stringify(normalizedRows)), sha256(JSON.stringify(normalizedAttrs)), sha256(JSON.stringify(normalizedAssets)),
+        sha256(normalizeDom(dom)), sha256(JSON.stringify(normalizedRows)), sha256(JSON.stringify(normalizedAttrs)), sha256(JSON.stringify(normalizedAssets)),
     ]);
-    const fingerprint = await sha256(JSON.stringify({ notebookId, path, hpath, domSha256, identityRowsSha256, attrsSha256, assetsSha256 }));
+    const fingerprint = await sha256(JSON.stringify({
+        hashVersion: BASELINE_HASH_VERSION, notebookId, path, hpath, domSha256, identityRowsSha256, attrsSha256, assetsSha256,
+    }));
     return {
+        hashVersion: BASELINE_HASH_VERSION,
         documentId, notebookId, path, hpath, domSha256, identityRowsSha256, attrsSha256, assetsSha256, fingerprint,
         blockIds, assets: normalizedAssets,
     };
 }
 
-const SNAPSHOT_CONSISTENCY_ATTEMPTS = 10;
+const SNAPSHOT_CONSISTENCY_ATTEMPTS = 12;
 const SNAPSHOT_RETRY_DELAY_MS = 600;
 const sleep = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -157,9 +173,14 @@ async function identityRowsEventuallyAbsent(documentId: string, target?: TargetC
 
 export async function captureDocumentSnapshot(documentId: string, target?: TargetConnection): Promise<MirrorDocumentSnapshot> {
     assertNodeId(documentId, "document ID");
-    // The kernel queues SQL index work, so immediately after a write the DOM
-    // and the indexed block rows can transiently disagree; flush and retry.
+    // The kernel queues SQL index and tree-write work, so a snapshot taken
+    // right after a write can transiently disagree with itself; flush first
+    // and retry until DOM and indexed block rows agree.
     for (let attempt = 1; ; attempt += 1) {
+        if (attempt > 1) {
+            await flushSqlQueue(target).catch(() => undefined);
+            await sleep(SNAPSHOT_RETRY_DELAY_MS);
+        }
         const [location, dom, attrs, hpath, identityRows, assetPaths] = await Promise.all([
             getDocumentLocation(documentId, target), getBlockDOM(documentId, target), getBlockAttrs(documentId, target),
             getHPathByID(documentId, target), getBlockIdentityRows(documentId, target), getDocumentAssets(documentId, target),
@@ -179,8 +200,6 @@ export async function captureDocumentSnapshot(documentId: string, target?: Targe
         if (attempt >= SNAPSHOT_CONSISTENCY_ATTEMPTS) {
             throw new Error(`Exact mirror: DOM and SQL block ID sets differ for ${documentId}`);
         }
-        await flushSqlQueue(target).catch(() => undefined);
-        await sleep(SNAPSHOT_RETRY_DELAY_MS);
     }
 }
 
@@ -298,16 +317,16 @@ async function rollback(
                 }
             }
             if (item.domApplied) {
-                if (currentDom === item.expected.dom) {
+                if (sameRenderedDom(currentDom, item.expected.dom)) {
                     try {
                         await assertOwnership();
                         await updateBlockDOM(item.before.documentId, item.before.dom, destination);
                     }
                     catch (error) {
                         const afterFailure = await getBlockDOM(item.before.documentId, destination).catch(() => "");
-                        if (afterFailure !== item.before.dom) throw error;
+                        if (!sameRenderedDom(afterFailure, item.before.dom)) throw error;
                     }
-                } else if (currentDom !== item.before.dom) {
+                } else if (!sameRenderedDom(currentDom, item.before.dom)) {
                     errors.push(`restore ${item.before.documentId}: DOM no longer matches operation-owned or original content`);
                     continue;
                 }
@@ -327,7 +346,7 @@ async function rollback(
             const expectedDom = item.domApplied ? item.expectedDom : item.placeholderDom;
             const expectedAttrs = item.attrsApplied ? item.expectedAttrs : item.placeholderAttrs;
             if (location.notebookId !== item.notebookId || location.path !== item.path
-                || !expectedDom || currentDom !== expectedDom || !expectedAttrs || !sameAttrs(currentAttrs, expectedAttrs)) {
+                || !expectedDom || !sameRenderedDom(currentDom, expectedDom) || !expectedAttrs || !sameAttrs(currentAttrs, expectedAttrs)) {
                 errors.push(`delete ${item.documentId}: current document does not match operation-owned path, DOM, and attributes`);
                 continue;
             }
@@ -455,7 +474,11 @@ async function mirrorDocumentsExactUnlocked(
             if (!entry.selected || !existingIds.has(entry.documentId)) continue;
             const snapshot = await captureDocumentSnapshot(entry.documentId, destination);
             destinationSnapshots.set(entry.documentId, snapshot);
-            const classification = classifyThreeWay(sourceSnapshots.get(entry.documentId)!.baseline, snapshot.baseline, status.sourceRecord.baselines[entry.documentId]);
+            // Baselines computed by older plugin versions used different
+            // fingerprint inputs; treat them as absent and require adoption.
+            const storedBaseline = status.sourceRecord.baselines[entry.documentId];
+            const usableBaseline = storedBaseline?.hashVersion === BASELINE_HASH_VERSION ? storedBaseline : undefined;
+            const classification = classifyThreeWay(sourceSnapshots.get(entry.documentId)!.baseline, snapshot.baseline, usableBaseline);
             if (classification === "destination-changed" || classification === "conflict") {
                 throw new Error(`Exact mirror conflict for ${entry.documentId}: ${classification}`);
             }
@@ -538,11 +561,11 @@ async function mirrorDocumentsExactUnlocked(
             } catch (error) {
                 const current = await getBlockDOM(entry.documentId, destination).catch(() => "");
                 if (updated) {
-                    if (current === expected.dom) updated.domApplied = true;
-                    else if (current !== before!.dom) ownershipErrors.push(`update ${entry.documentId}: ambiguous DOM failure left unknown content`);
+                    if (sameRenderedDom(current, expected.dom)) updated.domApplied = true;
+                    else if (!sameRenderedDom(current, before!.dom)) ownershipErrors.push(`update ${entry.documentId}: ambiguous DOM failure left unknown content`);
                 } else if (created) {
-                    if (current === expected.dom) created.domApplied = true;
-                    else if (current !== created.placeholderDom) ownershipErrors.push(`update ${entry.documentId}: ambiguous DOM failure left unknown content`);
+                    if (sameRenderedDom(current, expected.dom)) created.domApplied = true;
+                    else if (!sameRenderedDom(current, created.placeholderDom ?? "")) ownershipErrors.push(`update ${entry.documentId}: ambiguous DOM failure left unknown content`);
                 }
                 throw error;
             }

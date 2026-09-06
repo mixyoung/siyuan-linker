@@ -110,5 +110,6 @@
   "mirrorFailureCause": "原因",
   "mirrorOperationId": "操作 ID",
   "rollbackErrors": "回滚错误",
-  "residualAssetCleanup": "保留供手动清理的残留资源路径"
+  "residualAssetCleanup": "保留供手动清理的残留资源路径",
+  "resetPairingPendingConfirm": "两端中存在待处理镜像操作。强制重置将丢弃该安全记录（两端插件数据目录中会各保留一份归档副本），已部分应用的镜像写入将保持原样。请先确认目标端工作空间状态，再重新配对。确定强制重置吗？"
 }
