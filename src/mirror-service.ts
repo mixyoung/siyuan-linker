@@ -171,6 +171,34 @@ async function identityRowsEventuallyAbsent(documentId: string, target?: TargetC
     return !(await findBlockIdentityRows([documentId], target)).length;
 }
 
+const FINAL_VERIFICATION_TIMEOUT_MS = 30_000;
+
+/**
+ * Recaptures a just-written destination document and only accepts a state
+ * that matches the source. The kernel queues `.sy` tree writes separately
+ * from the SQL queue, so a recapture can transiently return the pre-write
+ * state even though DOM and SQL agree with each other — self-consistency
+ * checks cannot see it. Recognize that case via the pre-write DOM hash and
+ * keep retrying within the budget; anything else fails immediately so a
+ * genuine divergence still rolls back.
+ */
+async function recaptureWrittenDocument(
+    sourceSnapshot: MirrorDocumentSnapshot,
+    destination: TargetConnection | undefined,
+    staleDomHash: () => string | undefined | Promise<string | undefined>,
+): Promise<MirrorDocumentSnapshot> {
+    const deadline = Date.now() + FINAL_VERIFICATION_TIMEOUT_MS;
+    for (;;) {
+        const snapshot = await captureDocumentSnapshot(sourceSnapshot.documentId, destination);
+        if (snapshot.baseline.fingerprint === sourceSnapshot.baseline.fingerprint) return snapshot;
+        const staleHash = staleDomHash();
+        const stale = staleHash !== undefined && snapshot.baseline.domSha256 === staleHash;
+        if (!stale || Date.now() > deadline) return snapshot;
+        await flushSqlQueue(destination).catch(() => undefined);
+        await sleep(SNAPSHOT_RETRY_DELAY_MS);
+    }
+}
+
 export async function captureDocumentSnapshot(documentId: string, target?: TargetConnection): Promise<MirrorDocumentSnapshot> {
     assertNodeId(documentId, "document ID");
     // The kernel queues SQL index and tree-write work, so a snapshot taken
@@ -234,6 +262,15 @@ function sameAssets(left: MirrorDocumentBaseline["assets"], right: MirrorDocumen
     return JSON.stringify(sort(left)) === JSON.stringify(sort(right));
 }
 
+function firstDomDiff(normalizedSource: string, normalizedDestination: string): string {
+    let index = 0;
+    while (index < Math.min(normalizedSource.length, normalizedDestination.length)
+        && normalizedSource[index] === normalizedDestination[index]) index += 1;
+    const from = Math.max(0, index - 80);
+    return `at ${index}: source=${JSON.stringify(normalizedSource.slice(from, index + 160))}`
+        + ` destination=${JSON.stringify(normalizedDestination.slice(from, index + 160))}`;
+}
+
 function assertCommonSnapshot(source: MirrorDocumentSnapshot, destination: MirrorDocumentSnapshot): void {
     const differing: string[] = [];
     for (const key of Object.keys(source.baseline) as Array<keyof MirrorDocumentBaseline>) {
@@ -246,8 +283,11 @@ function assertCommonSnapshot(source: MirrorDocumentSnapshot, destination: Mirro
             ? `; sourceRows=${JSON.stringify(source.identityRows.map((row) => ({ ...row, ial: normalizeIal(row.ial ?? "") })))}`
                 + ` destinationRows=${JSON.stringify(destination.identityRows.map((row) => ({ ...row, ial: normalizeIal(row.ial ?? "") })))}`
             : "";
+        const domPart = differing.includes("domSha256")
+            ? `; domDiff=${firstDomDiff(normalizeDom(source.dom), normalizeDom(destination.dom))}`
+            : "";
         throw new Error(
-            `Exact mirror final verification differs for ${source.documentId} in [${differing.join(", ") || "block ID set"}]${rowsPart}`,
+            `Exact mirror final verification differs for ${source.documentId} in [${differing.join(", ") || "block ID set"}]${rowsPart}${domPart}`,
         );
     }
 }
@@ -618,7 +658,12 @@ async function mirrorDocumentsExactUnlocked(
         for (const entry of required.values()) {
             if (!entry.selected && !missingIds.has(entry.documentId)) continue;
             const sourceSnapshot = sourceSnapshots.get(entry.documentId)!;
-            const destinationSnapshot = await captureDocumentSnapshot(entry.documentId, destination);
+            const destinationSnapshot = await recaptureWrittenDocument(sourceSnapshot, destination, () => {
+                const created = createdWrites.find((item) => item.documentId === entry.documentId);
+                if (created) return created.placeholderDom ? sha256(normalizeDom(created.placeholderDom)) : undefined;
+                const updated = updatedWrites.find((item) => item.before.documentId === entry.documentId);
+                return updated ? updated.before.baseline.domSha256 : undefined;
+            });
             assertCommonSnapshot(sourceSnapshot, destinationSnapshot);
             baselines[entry.documentId] = destinationSnapshot.baseline;
         }
