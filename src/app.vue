@@ -36,6 +36,18 @@
         {{ plugin.i18n.targetService }}:
         <span class="info-value">{{ plugin.getSelectedTargetLabel() }}</span>
       </p>
+      <p class="info-item">
+        {{ plugin.i18n.transferMode }}:
+        <span class="info-value">{{ transferModeLabel }}</span>
+      </p>
+      <p class="info-item">
+        {{ plugin.i18n.pairingStatus }}:
+        <span :class="['info-value', { 'pairing-invalid': !pairingUsable }]">{{ pairingStatusLabel }}</span>
+      </p>
+      <p v-if="pairingDetail" class="pairing-detail">{{ pairingDetail }}</p>
+      <p v-if="exactMode && !pairingUsable" class="status error pairing-required">
+        {{ plugin.i18n.dockPairingRequired }}
+      </p>
       <p v-if="selectedDocuments.length" class="info-item">
         {{ plugin.i18n.selectedNotes }}:
         <span class="info-value">{{ selectedDocuments.map((item) => item.name).join(', ') }}</span>
@@ -43,7 +55,7 @@
       <button
         v-if="selectedDocuments.length"
         class="action-button"
-        :disabled="pulling"
+        :disabled="!canPull"
         @click="pullSelected"
       >
         {{ pulling ? plugin.i18n.pulling : plugin.i18n.pullNotes }}
@@ -57,6 +69,7 @@ import { defineComponent, type PropType } from "vue";
 import FileTree from "./MyVue/FileTree.vue";
 import { listDocuments, listNotebooks, type FileTreeNode, type NotebookOption } from "./FileTreeApi";
 import type SiYuanLinker from "./index";
+import type { MirrorPairStatus } from "./mirror-types";
 
 export default defineComponent({
   name: "App",
@@ -76,12 +89,48 @@ export default defineComponent({
       loading: false,
       pulling: false,
       error: "",
+      pairingStatus: this.plugin.getPairingStatus() as MirrorPairStatus,
+      transferMode: this.plugin.getCurrentTransferMode(),
       unsubscribeTargetChange: null as null | (() => void),
+      unsubscribePairingStatus: null as null | (() => void),
     };
   },
   computed: {
     selectedIds(): string[] {
       return this.selectedDocuments.map((item) => item.id);
+    },
+    exactMode(): boolean {
+      return this.transferMode === "preserve-ids";
+    },
+    transferModeLabel(): string {
+      return this.exactMode ? this.plugin.i18n.exactIdMirror : this.plugin.i18n.independentCopy;
+    },
+    pairingUsable(): boolean {
+      return this.pairingStatus.state === "ready" && this.pairingStatus.valid && !this.pairingStatus.pending;
+    },
+    pairingStatusLabel(): string {
+      if (this.pairingStatus.state === "loading") return this.plugin.i18n.pairingStateLoading;
+      if (this.pairingStatus.state === "unknown") return this.plugin.i18n.pairingStateUnknown;
+      if (this.pairingStatus.pending) return this.plugin.i18n.pairingStatePending;
+      if (this.pairingStatus.valid) return this.plugin.i18n.pairingStateValid;
+      if (this.pairingStatus.sourceRecord || this.pairingStatus.destinationRecord) {
+        return this.plugin.i18n.pairingStateMismatch;
+      }
+      return this.plugin.i18n.pairingStateNotPaired;
+    },
+    pairingDetail(): string {
+      const pairId = this.pairingStatus.sourceRecord?.pairId ?? this.pairingStatus.destinationRecord?.pairId;
+      const details = [
+        pairId ? `${this.plugin.i18n.pairId} ${this.shortId(pairId)}` : "",
+        `${this.plugin.i18n.allowedNotebooks} ${this.pairingStatus.allowedNotebookIds.length}`,
+      ].filter(Boolean);
+      if (this.pairingStatus.reasons.length) {
+        details.push(this.pairingStatus.reasons.join("; "));
+      }
+      return details.join(" · ");
+    },
+    canPull(): boolean {
+      return !this.pulling && (!this.exactMode || this.pairingUsable);
     },
   },
   async mounted() {
@@ -91,12 +140,20 @@ export default defineComponent({
       this.selectedDocuments = [];
       void this.refresh();
     });
+    this.unsubscribePairingStatus = this.plugin.onPairingStatusChange((status) => {
+      this.pairingStatus = status;
+      this.transferMode = this.plugin.getCurrentTransferMode();
+    });
     await this.refresh();
   },
   beforeUnmount() {
     this.unsubscribeTargetChange?.();
+    this.unsubscribePairingStatus?.();
   },
   methods: {
+    shortId(value: string): string {
+      return value.length > 8 ? `${value.slice(0, 8)}…` : value;
+    },
     async refresh() {
       this.loading = true;
       this.error = "";
@@ -171,6 +228,7 @@ export default defineComponent({
       }
     },
     async pullSelected() {
+      if (!this.canPull) return;
       this.pulling = true;
       try {
         await this.plugin.pullNote(this.selectedDocuments.map((item) => item.id));
@@ -224,7 +282,7 @@ export default defineComponent({
 }
 
 .action-button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.6;
 }
 
@@ -242,7 +300,8 @@ export default defineComponent({
   color: var(--b3-theme-on-surface);
 }
 
-.status.error {
+.status.error,
+.pairing-invalid {
   color: var(--b3-card-error-color);
 }
 
@@ -255,11 +314,24 @@ export default defineComponent({
 }
 
 .info-item {
+  margin: 6px 0;
   font-size: 14px;
 }
 
 .info-value {
   font-weight: 600;
   color: var(--b3-theme-primary);
+}
+
+.pairing-detail {
+  margin: 4px 0 8px;
+  color: var(--b3-theme-on-surface);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.pairing-required {
+  margin: 6px 0;
+  padding: 8px 0;
 }
 </style>

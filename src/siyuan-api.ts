@@ -14,6 +14,29 @@ export interface DocumentLocation {
     notebookId: string;
 }
 
+export interface CreateDocWithMdInput {
+    notebookId: string;
+    id: string;
+    parentId: string;
+    path: string;
+    markdown: string;
+}
+
+export interface BlockIdentityRow {
+    id: string;
+    parent_id: string;
+    root_id: string;
+    box: string;
+    path: string;
+    hpath: string;
+    type: string;
+    subtype: string;
+    ial: string;
+}
+
+export type BlockAttrs = Record<string, string>;
+export type SqlRow = Record<string, string | number | null>;
+
 type SiYuanResponse<T> = {
     code: number;
     msg?: string;
@@ -21,6 +44,42 @@ type SiYuanResponse<T> = {
 };
 
 const RESPONSE_PREVIEW_LIMIT = 300;
+const NODE_ID_PATTERN = /^\d{14}-[a-z0-9]{7}$/;
+const NOTEBOOK_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+export function assertNodeId(value: string, label = "block ID"): string {
+    if (!NODE_ID_PATTERN.test(value)) throw new Error(`Invalid ${label}: ${value}`);
+    return value;
+}
+
+export function assertNotebookId(value: string): string {
+    if (!NOTEBOOK_ID_PATTERN.test(value)) throw new Error(`Invalid notebook ID: ${value}`);
+    return value;
+}
+
+export function assertDocumentPath(value: string): string {
+    if (!value.startsWith("/") || !value.endsWith(".sy") || value.includes("\\") || value.includes("\0")) {
+        throw new Error(`Invalid document path: ${value}`);
+    }
+    const segments = value.split("/").slice(1);
+    if (!segments.length || segments.some((segment) => !segment || segment === "." || segment === "..")) {
+        throw new Error(`Invalid document path: ${value}`);
+    }
+    const ids = segments.map((segment) => segment.replace(/\.sy$/, ""));
+    ids.forEach((id) => assertNodeId(id, "document path ID"));
+    return value;
+}
+
+export function assertHPath(value: string): string {
+    if (!value.startsWith("/") || value.includes("\\") || value.includes("\0") || value.split("/").some((segment) => segment === "." || segment === "..")) {
+        throw new Error(`Invalid human path: ${value}`);
+    }
+    return value;
+}
+
+export function quoteSqlString(value: string): string {
+    return `'${value.replace(/'/g, "''")}'`;
+}
 
 export const endpoint = (path: string, target?: TargetConnection) => `${target?.url ?? ""}${path}`;
 
@@ -397,10 +456,179 @@ export async function getDocumentAssets(docId: string, target?: TargetConnection
         "List document assets",
         target,
     );
+    if (data === null) return [];
     if (!Array.isArray(data) || data.some((path) => typeof path !== "string")) {
         throw new Error("List document assets: invalid asset list response");
     }
     return [...new Set(data.map((path) => normalizeAssetPath(String(path))))];
+}
+
+export async function createDocWithMd(input: CreateDocWithMdInput, target?: TargetConnection): Promise<string> {
+    assertNotebookId(input.notebookId);
+    assertNodeId(input.id, "document ID");
+    if (input.parentId) assertNodeId(input.parentId, "parent document ID");
+    assertHPath(input.path);
+    if (typeof input.markdown !== "string") throw new Error("Create document: markdown must be a string");
+    const data = await requestJson<unknown>("/api/filetree/createDocWithMd", {
+        notebook: input.notebookId,
+        id: input.id,
+        parentID: input.parentId,
+        path: input.path,
+        markdown: input.markdown,
+    }, `Create document ${input.id}`, target);
+    const createdId = typeof data === "string"
+        ? data
+        : data && typeof data === "object" && typeof (data as Record<string, unknown>).id === "string"
+            ? String((data as Record<string, unknown>).id)
+            : null;
+    if (createdId !== input.id) throw new Error(`Create document ${input.id}: API did not confirm the requested exact ID`);
+    return createdId;
+}
+
+export async function getBlockDOM(id: string, target?: TargetConnection): Promise<string> {
+    assertNodeId(id);
+    const data = await requestJson<unknown>("/api/block/getBlockDOM", { id }, `Get block DOM ${id}`, target);
+    const dom = data && typeof data === "object" ? (data as Record<string, unknown>).dom : data;
+    if (typeof dom !== "string" || !dom.trim()) throw new Error(`Get block DOM ${id}: invalid DOM response`);
+    return dom;
+}
+
+export async function updateBlockDOM(id: string, dom: string, target?: TargetConnection): Promise<void> {
+    assertNodeId(id);
+    if (typeof dom !== "string" || !dom.trim()) throw new Error(`Update block DOM ${id}: DOM must be non-empty`);
+    await requestJson("/api/block/updateBlock", { id, dataType: "dom", data: dom }, `Update block DOM ${id}`, target);
+}
+
+export async function getBlockAttrs(id: string, target?: TargetConnection): Promise<BlockAttrs> {
+    assertNodeId(id);
+    const data = await requestJson<unknown>("/api/attr/getBlockAttrs", { id }, `Get block attributes ${id}`, target);
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`Get block attributes ${id}: invalid response`);
+    const attrs: BlockAttrs = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+        if (typeof value !== "string") throw new Error(`Get block attributes ${id}: invalid attribute ${key}`);
+        attrs[key] = value;
+    }
+    return attrs;
+}
+
+export async function setBlockAttrs(id: string, attrs: BlockAttrs, target?: TargetConnection): Promise<void> {
+    assertNodeId(id);
+    if (!attrs || typeof attrs !== "object" || Array.isArray(attrs) || Object.values(attrs).some((value) => typeof value !== "string")) {
+        throw new Error(`Set block attributes ${id}: invalid attributes`);
+    }
+    await requestJson("/api/attr/setBlockAttrs", { id, attrs }, `Set block attributes ${id}`, target);
+}
+
+export async function getHPathByID(id: string, target?: TargetConnection): Promise<string> {
+    assertNodeId(id);
+    const data = await requestJson<unknown>("/api/filetree/getHPathByID", { id }, `Get human path ${id}`, target);
+    if (typeof data !== "string") throw new Error(`Get human path ${id}: invalid response`);
+    try { return assertHPath(data); }
+    catch { throw new Error(`Get human path ${id}: invalid response`); }
+}
+
+export function assertReadonlySql(statement: string): string {
+    const sql = statement.trim();
+    if (!sql || sql.includes("\0") || /;\s*\S/.test(sql) || /--|\/\*/.test(sql)) {
+        throw new Error("Readonly SQL: invalid statement");
+    }
+    const withoutTerminator = sql.replace(/;\s*$/, "");
+    if (!/^(?:SELECT|WITH)\b/i.test(withoutTerminator)) throw new Error("Readonly SQL: only SELECT queries are allowed");
+    if (/\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b/i.test(withoutTerminator)) {
+        throw new Error("Readonly SQL: mutating statements are not allowed");
+    }
+    return withoutTerminator;
+}
+
+export async function readonlySql(statement: string, target?: TargetConnection): Promise<SqlRow[]> {
+    const stmt = assertReadonlySql(statement);
+    const data = await requestJson<unknown>("/api/query/sql", { stmt, mode: "readonly" }, "Readonly SQL", target);
+    if (!Array.isArray(data) || data.some((row) => !row || typeof row !== "object" || Array.isArray(row))) {
+        throw new Error("Readonly SQL: invalid row response");
+    }
+    return data as SqlRow[];
+}
+
+const SQL_PAGE_SIZE = 256;
+const SQL_ID_CHUNK_SIZE = 200;
+const BLOCK_IDENTITY_COLUMNS = "id, parent_id, root_id, box, path, hpath, type, subtype, ial";
+
+function parseBlockIdentityRow(row: SqlRow, action: string): BlockIdentityRow {
+    if (typeof row.id !== "string" || typeof row.root_id !== "string" || typeof row.box !== "string" || typeof row.path !== "string") {
+        throw new Error(`Readonly SQL: invalid ${action} row`);
+    }
+    const result: BlockIdentityRow = {
+        id: row.id,
+        parent_id: typeof row.parent_id === "string" ? row.parent_id : "",
+        root_id: row.root_id,
+        box: row.box,
+        path: row.path,
+        hpath: typeof row.hpath === "string" ? row.hpath : "",
+        type: typeof row.type === "string" ? row.type : "",
+        subtype: typeof row.subtype === "string" ? row.subtype : "",
+        ial: typeof row.ial === "string" ? row.ial : "",
+    };
+    assertNodeId(result.id);
+    if (result.parent_id) assertNodeId(result.parent_id, "parent block ID");
+    if (result.root_id) assertNodeId(result.root_id, "root document ID");
+    return result;
+}
+
+async function readAllIdentityPages(where: string, target?: TargetConnection): Promise<BlockIdentityRow[]> {
+    const result: BlockIdentityRow[] = [];
+    let lastId = "";
+    while (true) {
+        const cursor = lastId ? ` AND id > ${quoteSqlString(lastId)}` : "";
+        const rows = await readonlySql(
+            `SELECT ${BLOCK_IDENTITY_COLUMNS} FROM blocks WHERE (${where})${cursor} ORDER BY id LIMIT ${SQL_PAGE_SIZE}`,
+            target,
+        );
+        if (!rows.length) break;
+        const parsed = rows.map((row) => parseBlockIdentityRow(row, "block identity"));
+        const nextLastId = parsed[parsed.length - 1].id;
+        if (nextLastId <= lastId || parsed.some((row, index) => index > 0 && row.id <= parsed[index - 1].id)) {
+            throw new Error("Readonly SQL: identity pagination did not advance");
+        }
+        result.push(...parsed);
+        lastId = nextLastId;
+    }
+    return result;
+}
+
+export async function getBlockIdentityRows(rootId: string, target?: TargetConnection): Promise<BlockIdentityRow[]> {
+    assertNodeId(rootId, "root document ID");
+    const quoted = quoteSqlString(rootId);
+    return readAllIdentityPages(`root_id = ${quoted} OR id = ${quoted}`, target);
+}
+
+export async function findBlockIdentityRows(ids: string[], target?: TargetConnection): Promise<BlockIdentityRow[]> {
+    const unique = [...new Set(ids)].sort();
+    if (!unique.length) return [];
+    unique.forEach((id) => assertNodeId(id));
+    const result = new Map<string, BlockIdentityRow>();
+    for (let index = 0; index < unique.length; index += SQL_ID_CHUNK_SIZE) {
+        const values = unique.slice(index, index + SQL_ID_CHUNK_SIZE).map(quoteSqlString).join(", ");
+        for (const row of await readAllIdentityPages(`id IN (${values})`, target)) result.set(row.id, row);
+    }
+    return [...result.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export async function removeDocById(id: string, target?: TargetConnection): Promise<void> {
+    assertNodeId(id, "document ID");
+    await requestJson("/api/filetree/removeDocByID", { id }, `Remove document ${id}`, target);
+}
+
+export function assertWorkspaceFilePath(path: string): string {
+    if (!path.startsWith("data/") || path.includes("\\") || path.includes("\0") || path.split("/").some((part) => part === ".." || part === ".")) {
+        throw new Error(`Invalid workspace file path: ${path}`);
+    }
+    if (path.endsWith(".sy")) throw new Error("Workspace file removal cannot remove SiYuan documents; use removeDocById");
+    return path;
+}
+
+export async function removeWorkspaceFile(path: string, target?: TargetConnection): Promise<void> {
+    assertWorkspaceFilePath(path);
+    await requestJson("/api/file/removeFile", { path }, `Remove workspace file ${path}`, target);
 }
 
 export async function updateIndexes(paths: string[], target?: TargetConnection): Promise<void> {
