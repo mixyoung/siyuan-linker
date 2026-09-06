@@ -23,7 +23,10 @@ const api = vi.hoisted(() => ({
     writeFile: vi.fn(),
 }));
 
+const mirror = vi.hoisted(() => ({ mirrorDocumentsExact: vi.fn() }));
+
 vi.mock("../src/siyuan-api", () => api);
+vi.mock("../src/mirror-service", () => mirror);
 
 import {
     assertCompatible,
@@ -42,6 +45,7 @@ beforeEach(() => {
     api.downloadWorkspaceFileIfExists.mockResolvedValue(null);
     api.readTextFile.mockRejectedValue(new Error("file does not exist"));
     api.reloadFileTree.mockResolvedValue(undefined);
+    mirror.mirrorDocumentsExact.mockResolvedValue({ count: 1, warnings: [], operationId: "operation" });
 });
 
 describe("compatibility gates", () => {
@@ -102,63 +106,27 @@ describe("safe document transfer", () => {
 });
 
 describe("preserve-ID transfer", () => {
-    it("rejects attribute views before writing destination files", async () => {
-        api.getDocumentLocation.mockResolvedValue({ notebookId: "box", path: "data/box/doc.sy" });
-        api.listNotebooks.mockResolvedValue([{ id: "box", name: "Notes" }]);
-        api.readTextFile.mockResolvedValue('{"Properties":{},"AttributeViewID":"av-id"}');
+    it("requires exact versions and delegates to native exact mirror orchestration", async () => {
+        mirror.mirrorDocumentsExact.mockResolvedValue({
+            count: 1,
+            warnings: ["reload warning"],
+            operationId: "operation",
+        });
 
-        await expect(transferDocumentsPreservingIds(["doc"], undefined, remote)).rejects.toThrow(
-            "does not support documents containing attribute views",
-        );
+        await expect(transferDocumentsPreservingIds(["20260904120000-abcdefg", "20260904120000-abcdefg"], undefined, remote))
+            .resolves.toEqual({ count: 1, warnings: ["reload warning"] });
+
+        expect(api.getSystemVersion).toHaveBeenCalledTimes(2);
+        expect(mirror.mirrorDocumentsExact).toHaveBeenCalledWith(["20260904120000-abcdefg"], undefined, remote);
         expect(api.writeFile).not.toHaveBeenCalled();
         expect(api.updateIndexes).not.toHaveBeenCalled();
     });
 
-    it("rejects encrypted notebooks before reading raw document files", async () => {
-        api.getDocumentLocation.mockResolvedValue({ notebookId: "box", path: "data/box/doc.sy" });
-        api.listNotebooks.mockResolvedValue([{ id: "box", name: "Notes" }]);
-        api.isEncryptedNotebook.mockResolvedValueOnce(true);
-
-        await expect(transferDocumentsPreservingIds(["doc"], undefined, remote)).rejects.toThrow(
-            "does not support encrypted notebooks",
-        );
-        expect(api.readTextFile).not.toHaveBeenCalled();
-    });
-
-    it("aborts before writing when a destination asset has different content", async () => {
-        api.getDocumentLocation.mockResolvedValue({ notebookId: "box", path: "data/box/doc.sy" });
-        api.listNotebooks.mockResolvedValue([{ id: "box", name: "Notes" }]);
-        api.readTextFile.mockResolvedValue('{"Properties":{}}');
-        api.getDocumentAssets.mockResolvedValue(["data/assets/shared.bin"]);
-        api.downloadWorkspaceFile.mockResolvedValue(new Blob(["source"]));
-        api.downloadWorkspaceFileIfExists.mockImplementation(async (path: string) => (
-            path.includes("assets/") ? new Blob(["destination"]) : null
-        ));
-
-        await expect(transferDocumentsPreservingIds(["doc"], undefined, remote)).rejects.toThrow(
-            "destination asset differs",
-        );
-        expect(api.writeFile).not.toHaveBeenCalled();
-    });
-
-    it("retains existing unselected ancestors and indexes only written documents", async () => {
-        api.getDocumentLocation.mockResolvedValue({ notebookId: "box", path: "data/box/parent/child.sy" });
-        api.listNotebooks.mockResolvedValue([{ id: "box", name: "Notes" }]);
-        api.readTextFile.mockResolvedValue('{"Properties":{}}');
-        api.getDocumentAssets.mockResolvedValue([]);
-        api.downloadWorkspaceFileIfExists.mockImplementation(async (path: string) => (
-            path === "data/box/parent.sy" ? new Blob(["existing parent"]) : null
-        ));
-
-        await expect(transferDocumentsPreservingIds(["child", "child"], undefined, remote)).resolves.toEqual({ count: 1, warnings: [] });
-
-        expect(api.writeFile).toHaveBeenCalledTimes(1);
-        expect(api.writeFile).toHaveBeenCalledWith(
-            "data/box/parent/child.sy",
-            expect.any(Blob),
-            remote,
-        );
-        expect(api.updateIndexes).toHaveBeenCalledWith(["/box/parent/child.sy"], remote);
+    it("does not invoke mirror orchestration when exact versions differ", async () => {
+        api.getSystemVersion.mockResolvedValueOnce("3.8.2").mockResolvedValueOnce("3.8.3");
+        await expect(transferDocumentsPreservingIds(["20260904120000-abcdefg"], undefined, remote))
+            .rejects.toThrow("requires matching SiYuan versions");
+        expect(mirror.mirrorDocumentsExact).not.toHaveBeenCalled();
     });
 });
 
