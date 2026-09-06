@@ -418,15 +418,17 @@ export default class SiYuanLinker extends Plugin {
     public async resetActiveTargetPairing(): Promise<void> {
         if (this.pairingActionInProgress) return;
         const current = await this.refreshPairingStatus();
+        let force = false;
         if (current.pending) {
-            showMessage(this.i18n.pendingRecoveryRequired, -1, "error");
+            if (!window.confirm(this.i18n.resetPairingPendingConfirm)) return;
+            force = true;
+        } else if (!window.confirm(this.i18n.resetPairingConfirm)) {
             return;
         }
-        if (!window.confirm(this.i18n.resetPairingConfirm)) return;
         this.setPairingActionsBusy(true);
         try {
             const target = this.getTargetConnection();
-            await resetMirrorPeer(undefined, target);
+            await resetMirrorPeer(undefined, target, { force });
             await this.refreshPairingStatus();
             showMessage(this.i18n.pairingResetSucceeded, 6000, "info");
         } catch (error) {

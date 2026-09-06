@@ -86,6 +86,7 @@ describe("mirror workspace metadata", () => {
         expect(await inspectMirrorPair(undefined, remote)).toMatchObject({ valid: true, pending: false });
         await persistPendingOperation(pending, undefined, remote);
         const baseline: MirrorDocumentBaseline = {
+            hashVersion: 2,
             documentId: pending.documentIds[0], notebookId: "shared", path: `data/shared/${pending.documentIds[0]}.sy`, hpath: "/Doc",
             domSha256: "a", identityRowsSha256: "b", attrsSha256: "c", assetsSha256: "d", fingerprint: "e",
             blockIds: pending.documentIds, assets: [],
@@ -117,6 +118,34 @@ describe("mirror workspace metadata", () => {
 
         await resetMirrorPeer(undefined, remote);
         expect((await inspectMirrorPair(undefined, remote)).valid).toBe(false);
+    });
+
+    it("parses legacy baselines without hashVersion and round-trips current ones", async () => {
+        const pair = await pairMirrorWorkspaces(undefined, remote);
+        const remoteStore = JSON.parse(files.get("remote")!.get(MIRROR_LINEAGES_PATH)!);
+        remoteStore.peers[pair.sourceIdentity.workspaceId].baselines["20260904120000-abcdefg"] = {
+            documentId: "20260904120000-abcdefg", notebookId: "shared", path: "data/shared/20260904120000-abcdefg.sy", hpath: "/Doc",
+            domSha256: "a", identityRowsSha256: "b", attrsSha256: "c", assetsSha256: "d", fingerprint: "e",
+            blockIds: ["20260904120000-abcdefg"], assets: [],
+        };
+        files.get("remote")!.set(MIRROR_LINEAGES_PATH, `${JSON.stringify(remoteStore, null, 2)}\n`);
+        const legacy = (await inspectMirrorPair(undefined, remote)).destinationRecord?.baselines["20260904120000-abcdefg"];
+        expect(legacy?.hashVersion).toBe(1);
+    });
+
+    it("forces a reset under pending only with the explicit flag and archives the stores", async () => {
+        await pairMirrorWorkspaces(undefined, remote);
+        await persistPendingOperation({
+            operationId: "op-1", pairId: "pair", sourceWorkspaceId: "s", destinationWorkspaceId: "d",
+            documentIds: ["20260904120000-abcdefg"], startedAt: "2026-09-06T00:00:00Z",
+        }, undefined, remote);
+        await expect(resetMirrorPeer(undefined, remote)).rejects.toThrow("requires recovery");
+        await resetMirrorPeer(undefined, remote, { force: true });
+        const status = await inspectMirrorPair(undefined, remote);
+        expect(status.valid).toBe(false);
+        expect(status.pending).toBe(false);
+        const remoteFiles = [...files.get("remote")!.keys()];
+        expect(remoteFiles.some((name) => name.includes("mirror-lineages.reset-destination-"))).toBe(true);
     });
 
     it("serializes in-process operations for the same endpoint pair in either direction", async () => {

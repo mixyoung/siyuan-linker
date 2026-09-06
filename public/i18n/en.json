@@ -110,5 +110,6 @@
   "mirrorFailureCause": "Cause",
   "mirrorOperationId": "Operation ID",
   "rollbackErrors": "Rollback errors",
-  "residualAssetCleanup": "Residual asset paths retained for manual cleanup"
+  "residualAssetCleanup": "Residual asset paths retained for manual cleanup",
+  "resetPairingPendingConfirm": "A pending mirror operation exists on one or both workspaces. Force reset discards that safety record (an archive copy is kept in both plugin data folders), and any partially applied mirror writes are left as they are. Verify the destination workspace before pairing again. Force reset now?"
 }

@@ -78,6 +78,12 @@ function parseBaseline(value: unknown, key: string): MirrorDocumentBaseline {
         || item.blockIds.some((id) => typeof id !== "string") || !Array.isArray(item.assets)) {
         throw new Error(`Mirror lineages: invalid baseline ${key}`);
     }
+    // Baselines written before hashVersion existed are treated as version 1;
+    // the transfer service ignores baselines whose version is not current.
+    const hashVersion = item.hashVersion === undefined ? 1 : item.hashVersion;
+    if (typeof hashVersion !== "number" || !Number.isInteger(hashVersion) || hashVersion < 1) {
+        throw new Error(`Mirror lineages: invalid baseline ${key}`);
+    }
     const assets = item.assets.map((asset) => {
         if (!asset || typeof asset !== "object" || typeof (asset as Record<string, unknown>).path !== "string"
             || typeof (asset as Record<string, unknown>).sha256 !== "string") {
@@ -86,6 +92,7 @@ function parseBaseline(value: unknown, key: string): MirrorDocumentBaseline {
         return { path: String((asset as Record<string, unknown>).path), sha256: String((asset as Record<string, unknown>).sha256) };
     });
     return {
+        hashVersion,
         documentId: String(item.documentId), notebookId: String(item.notebookId), path: String(item.path), hpath: String(item.hpath),
         domSha256: String(item.domSha256), identityRowsSha256: String(item.identityRowsSha256), attrsSha256: String(item.attrsSha256),
         assetsSha256: String(item.assetsSha256), fingerprint: String(item.fingerprint), blockIds: [...item.blockIds] as string[], assets,
@@ -373,7 +380,11 @@ export async function clearPendingAfterVerifiedRollback(
     if (!status.valid || status.pending) throw new Error("Rolled-back mirror pending state was not cleared and verified on both workspaces");
 }
 
-async function resetMirrorPeerUnlocked(source?: TargetConnection, destination?: TargetConnection): Promise<void> {
+async function resetMirrorPeerUnlocked(
+    source?: TargetConnection,
+    destination?: TargetConnection,
+    options?: { force?: boolean },
+): Promise<void> {
     assertDistinctMirrorEndpoints(source, destination);
     const [sourceIdentity, destinationIdentity] = await Promise.all([readWorkspaceIdentity(source), readWorkspaceIdentity(destination)]);
     if (!sourceIdentity || !destinationIdentity) return;
@@ -382,8 +393,20 @@ async function resetMirrorPeerUnlocked(source?: TargetConnection, destination?: 
     ]);
     const sourceRecord = sourceStore.peers[destinationIdentity.workspaceId];
     const destinationRecord = destinationStore.peers[sourceIdentity.workspaceId];
-    if (sourceRecord?.pendingOperation || destinationRecord?.pendingOperation) {
+    const pending = Boolean(sourceRecord?.pendingOperation || destinationRecord?.pendingOperation);
+    if (pending && !options?.force) {
         throw new Error("Mirror peer reset refused: a pending operation requires recovery or verified rollback before lineage can be reset");
+    }
+    if (pending && options?.force) {
+        // Force reset breaks the pending safety marker; archive the full
+        // stores first so the interrupted operation remains reconstructable.
+        const stamp = `${Date.now()}-${newUuid().slice(0, 8)}`;
+        await writeJsonVerified(`data/storage/petal/siyuan-linker/mirror-lineages.reset-source-${stamp}.json`, {
+            archivedAt: now(), reason: "forced-reset-with-pending", lineage: sourceStore,
+        }, source);
+        await writeJsonVerified(`data/storage/petal/siyuan-linker/mirror-lineages.reset-destination-${stamp}.json`, {
+            archivedAt: now(), reason: "forced-reset-with-pending", lineage: destinationStore,
+        }, destination);
     }
     delete sourceStore.peers[destinationIdentity.workspaceId];
     delete destinationStore.peers[sourceIdentity.workspaceId];
@@ -393,8 +416,12 @@ async function resetMirrorPeerUnlocked(source?: TargetConnection, destination?: 
     if (failures.length) throw new Error(`Mirror peer reset incomplete; inspect both workspaces before pairing again (${failures.join("; ")})`);
 }
 
-export async function resetMirrorPeer(source?: TargetConnection, destination?: TargetConnection): Promise<void> {
-    return withMirrorOperationLock(source, destination, () => resetMirrorPeerUnlocked(source, destination));
+export async function resetMirrorPeer(
+    source?: TargetConnection,
+    destination?: TargetConnection,
+    options?: { force?: boolean },
+): Promise<void> {
+    return withMirrorOperationLock(source, destination, () => resetMirrorPeerUnlocked(source, destination, options));
 }
 
 export const ADOPT_FULL_CLONE_CONFIRMATION = "ADOPT_FULL_CLONE_DESTINATION";
