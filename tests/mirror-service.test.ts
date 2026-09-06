@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
     downloadWorkspaceFile: vi.fn(),
     downloadWorkspaceFileIfExists: vi.fn(),
     findBlockIdentityRows: vi.fn(),
+    flushSqlQueue: vi.fn(async () => undefined),
     getBlockAttrs: vi.fn(),
     getBlockDOM: vi.fn(),
     getBlockIdentityRows: vi.fn(),

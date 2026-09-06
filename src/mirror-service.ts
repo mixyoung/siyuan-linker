@@ -4,6 +4,7 @@ import {
     downloadWorkspaceFile,
     downloadWorkspaceFileIfExists,
     findBlockIdentityRows,
+    flushSqlQueue,
     getBlockAttrs,
     getBlockDOM,
     getBlockIdentityRows,
@@ -96,6 +97,17 @@ function ancestorEntries(path: string): Array<{ documentId: string; path: string
     });
 }
 
+// `updated` is kernel-managed per-instance metadata, and SiYuan does not
+// guarantee a stable attribute order for IALs across instances, so identity
+// hashing uses a canonical sorted form without `updated`.
+function normalizeIal(ial: string): string {
+    const pairs = [...(ial ?? "").matchAll(/([\w-]+)="([^"]*)"/g)]
+        .map((match) => ({ key: match[1], value: match[2] }))
+        .filter((pair) => pair.key !== "updated")
+        .sort((left, right) => left.key.localeCompare(right.key));
+    return pairs.map((pair) => `${pair.key}="${pair.value}"`).join(" ");
+}
+
 async function buildBaseline(
     documentId: string,
     notebookId: string,
@@ -106,7 +118,12 @@ async function buildBaseline(
     identityRows: Awaited<ReturnType<typeof getBlockIdentityRows>>,
     assets: Array<{ path: string; sha256: string }>,
 ): Promise<MirrorDocumentBaseline> {
-    const normalizedRows = [...identityRows].sort((left, right) => left.id.localeCompare(right.id));
+    // `updated` timestamps inside block IALs are kernel-managed per-instance
+    // metadata; converged documents legitimately differ on them, so they are
+    // excluded from the cross-instance identity hash.
+    const normalizedRows = [...identityRows]
+        .map((row) => ({ ...row, ial: normalizeIal(row.ial ?? "") }))
+        .sort((left, right) => left.id.localeCompare(right.id));
     const normalizedAttrs = comparableAttrs(attrs);
     const normalizedAssets = assets.map(({ path: assetPath, sha256: assetSha256 }) => ({ path: assetPath, sha256: assetSha256 }))
         .sort((left, right) => left.path.localeCompare(right.path));
@@ -123,23 +140,48 @@ async function buildBaseline(
     };
 }
 
+const SNAPSHOT_CONSISTENCY_ATTEMPTS = 10;
+const SNAPSHOT_RETRY_DELAY_MS = 600;
+const sleep = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+// Removing a document queues index work; conclude "gone" only after the
+// kernel's SQL view has caught up.
+async function identityRowsEventuallyAbsent(documentId: string, target?: TargetConnection): Promise<boolean> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+        if (!(await findBlockIdentityRows([documentId], target)).length) return true;
+        await flushSqlQueue(target).catch(() => undefined);
+        await sleep(SNAPSHOT_RETRY_DELAY_MS);
+    }
+    return !(await findBlockIdentityRows([documentId], target)).length;
+}
+
 export async function captureDocumentSnapshot(documentId: string, target?: TargetConnection): Promise<MirrorDocumentSnapshot> {
     assertNodeId(documentId, "document ID");
-    const [location, dom, attrs, hpath, identityRows, assetPaths] = await Promise.all([
-        getDocumentLocation(documentId, target), getBlockDOM(documentId, target), getBlockAttrs(documentId, target),
-        getHPathByID(documentId, target), getBlockIdentityRows(documentId, target), getDocumentAssets(documentId, target),
-    ]);
-    const assets = await Promise.all([...assetPaths].sort().map(async (path) => {
-        const content = await downloadWorkspaceFile(path, target);
-        return { path, content, sha256: await sha256(content) };
-    }));
-    const baseline = await buildBaseline(documentId, location.notebookId, location.path, hpath, dom, attrs, identityRows, assets);
-    const domBlockIds = extractBlockIds(dom, documentId);
-    if (!sameStrings(domBlockIds, baseline.blockIds)) throw new Error(`Exact mirror: DOM and SQL block ID sets differ for ${documentId}`);
-    return {
-        documentId, notebookId: location.notebookId, path: location.path, hpath, dom, attrs,
-        managedAttrs: filterManagedRootAttrs(attrs), identityRows, blockIds: baseline.blockIds, assets, baseline,
-    };
+    // The kernel queues SQL index work, so immediately after a write the DOM
+    // and the indexed block rows can transiently disagree; flush and retry.
+    for (let attempt = 1; ; attempt += 1) {
+        const [location, dom, attrs, hpath, identityRows, assetPaths] = await Promise.all([
+            getDocumentLocation(documentId, target), getBlockDOM(documentId, target), getBlockAttrs(documentId, target),
+            getHPathByID(documentId, target), getBlockIdentityRows(documentId, target), getDocumentAssets(documentId, target),
+        ]);
+        const assets = await Promise.all([...assetPaths].sort().map(async (path) => {
+            const content = await downloadWorkspaceFile(path, target);
+            return { path, content, sha256: await sha256(content) };
+        }));
+        const baseline = await buildBaseline(documentId, location.notebookId, location.path, hpath, dom, attrs, identityRows, assets);
+        const domBlockIds = extractBlockIds(dom, documentId);
+        if (sameStrings(domBlockIds, baseline.blockIds)) {
+            return {
+                documentId, notebookId: location.notebookId, path: location.path, hpath, dom, attrs,
+                managedAttrs: filterManagedRootAttrs(attrs), identityRows, blockIds: baseline.blockIds, assets, baseline,
+            };
+        }
+        if (attempt >= SNAPSHOT_CONSISTENCY_ATTEMPTS) {
+            throw new Error(`Exact mirror: DOM and SQL block ID sets differ for ${documentId}`);
+        }
+        await flushSqlQueue(target).catch(() => undefined);
+        await sleep(SNAPSHOT_RETRY_DELAY_MS);
+    }
 }
 
 export function classifyThreeWay(
@@ -174,11 +216,20 @@ function sameAssets(left: MirrorDocumentBaseline["assets"], right: MirrorDocumen
 }
 
 function assertCommonSnapshot(source: MirrorDocumentSnapshot, destination: MirrorDocumentSnapshot): void {
-    if (source.baseline.fingerprint !== destination.baseline.fingerprint
+    const differing: string[] = [];
+    for (const key of Object.keys(source.baseline) as Array<keyof MirrorDocumentBaseline>) {
+        if (JSON.stringify(source.baseline[key]) !== JSON.stringify(destination.baseline[key])) differing.push(String(key));
+    }
+    if (differing.length
         || !sameStrings(source.blockIds, destination.blockIds)
-        || !sameAssets(source.baseline.assets, destination.baseline.assets)
-        || JSON.stringify(source.baseline) !== JSON.stringify(destination.baseline)) {
-        throw new Error(`Exact mirror final fingerprint, block IDs, or assets differ for ${source.documentId}`);
+        || !sameAssets(source.baseline.assets, destination.baseline.assets)) {
+        const rowsPart = differing.includes("identityRowsSha256")
+            ? `; sourceRows=${JSON.stringify(source.identityRows.map((row) => ({ ...row, ial: normalizeIal(row.ial ?? "") })))}`
+                + ` destinationRows=${JSON.stringify(destination.identityRows.map((row) => ({ ...row, ial: normalizeIal(row.ial ?? "") })))}`
+            : "";
+        throw new Error(
+            `Exact mirror final verification differs for ${source.documentId} in [${differing.join(", ") || "block ID set"}]${rowsPart}`,
+        );
     }
 }
 
@@ -285,9 +336,9 @@ async function rollback(
                 await removeDocById(item.documentId, destination);
             }
             catch (error) {
-                if ((await findBlockIdentityRows([item.documentId], destination)).length) throw error;
+                if (await identityRowsEventuallyAbsent(item.documentId, destination)) throw error;
             }
-            if ((await findBlockIdentityRows([item.documentId], destination)).length) {
+            if (!(await identityRowsEventuallyAbsent(item.documentId, destination))) {
                 errors.push(`delete ${item.documentId}: document still exists after rollback`);
             }
         } catch (error) { errors.push(`delete ${item.documentId}: ${errorText(error)}`); }
