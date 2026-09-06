@@ -109,12 +109,16 @@ function normalizeIal(ial: string): string {
     return pairs.map((pair) => `${pair.key}="${pair.value}"`).join(" ");
 }
 
-// The kernel refreshes per-node `updated` timestamps on its own schedule
-// (CreatedUpdated/RefreshUpdated during transactions), so rendered DOM can
-// differ across instances purely in volatile metadata. Identity hashing and
-// ownership comparisons use the DOM with those attributes removed.
+const EMPTY_EXTERNAL_LINK_BEFORE_VISIBLE_URL = /<span(?=[^>]*\sdata-type="a"(?:\s|>))(?=[^>]*\sdata-href="(https?:\/\/[^"]+)")[^>]*><\/span>\1(?=$|[\s<])/g;
+
+// The kernel refreshes per-node `updated` timestamps on its own schedule and
+// drops an empty external-link mark when its href is repeated immediately as
+// visible text. Identity comparisons canonicalize only those known equivalent
+// forms; non-empty links and links whose following text differs stay distinct.
 export function normalizeDom(dom: string): string {
-    return (dom ?? "").replace(/\s+updated="\d{14}"/g, "");
+    return (dom ?? "")
+        .replace(/\s+updated="\d{14}"/g, "")
+        .replace(EMPTY_EXTERNAL_LINK_BEFORE_VISIBLE_URL, "$1");
 }
 
 function sameRenderedDom(left: string, right: string): boolean {

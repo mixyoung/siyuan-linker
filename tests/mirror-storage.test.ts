@@ -29,7 +29,7 @@ import {
     resetMirrorPeer,
     withMirrorOperationLock,
 } from "../src/mirror-storage";
-import { MIRROR_LINEAGES_PATH, WORKSPACE_IDENTITY_PATH, type MirrorDocumentBaseline } from "../src/mirror-types";
+import { BASELINE_HASH_VERSION, MIRROR_LINEAGES_PATH, WORKSPACE_IDENTITY_PATH, type MirrorDocumentBaseline } from "../src/mirror-types";
 
 const remote = { url: "remote", token: "secret" };
 
@@ -86,7 +86,7 @@ describe("mirror workspace metadata", () => {
         expect(await inspectMirrorPair(undefined, remote)).toMatchObject({ valid: true, pending: false });
         await persistPendingOperation(pending, undefined, remote);
         const baseline: MirrorDocumentBaseline = {
-            hashVersion: 2,
+            hashVersion: BASELINE_HASH_VERSION,
             documentId: pending.documentIds[0], notebookId: "shared", path: `data/shared/${pending.documentIds[0]}.sy`, hpath: "/Doc",
             domSha256: "a", identityRowsSha256: "b", attrsSha256: "c", assetsSha256: "d", fingerprint: "e",
             blockIds: pending.documentIds, assets: [],

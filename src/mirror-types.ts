@@ -18,7 +18,7 @@ export interface AssetFingerprint {
 // Bump when the fingerprint inputs change so baselines computed with older
 // inputs are treated as absent instead of producing false conflicts after
 // an upgrade (e.g. v1 did not normalize volatile DOM metadata).
-export const BASELINE_HASH_VERSION = 2;
+export const BASELINE_HASH_VERSION = 3;
 
 export interface MirrorDocumentBaseline {
     hashVersion: number;
