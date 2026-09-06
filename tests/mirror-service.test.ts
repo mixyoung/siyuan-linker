@@ -227,6 +227,31 @@ describe("native exact mirror orchestration", () => {
         expect(storage.clearPendingAfterVerifiedRollback).toHaveBeenCalled();
     });
 
+    it("reports structured first-sync conflicts without a baseline and overwrites only on explicit adoption", async () => {
+        api.findBlockIdentityRows.mockResolvedValue([
+            { id, parent_id: "", root_id: id, box: "box", path: `/${id}.sy`, hpath: "/Doc", type: "d", subtype: "", ial: "" },
+            { id: childId, parent_id: id, root_id: id, box: "box", path: `/${id}.sy`, hpath: "/Doc", type: "p", subtype: "", ial: "" },
+        ]);
+        const sourceDom = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true">Body</div></div>`;
+        const divergent = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true">Destination edit</div></div>`;
+        let destinationDom = divergent;
+        api.getBlockDOM.mockImplementation(async (_blockId: string, target?: typeof remote) => target ? destinationDom : sourceDom);
+        api.updateBlockDOM.mockImplementation(async (_blockId: string, dom: string) => { destinationDom = dom; });
+        const error = await mirrorDocumentsExact([id], undefined, remote).catch((value) => value);
+        expect(error).toBeInstanceOf(MirrorOperationError);
+        expect(error.details.state).toBe("before-write");
+        expect(error.details.firstSyncConflicts).toEqual([id]);
+        expect(api.updateBlockDOM).not.toHaveBeenCalled();
+        expect(storage.persistPendingOperation).not.toHaveBeenCalled();
+        expect(storage.commitMirrorBaselines).not.toHaveBeenCalled();
+
+        await expect(mirrorDocumentsExact([id], undefined, remote, { adoptFirstBaselineConflicts: true }))
+            .resolves.toMatchObject({ count: 1 });
+        expect(api.updateBlockDOM).toHaveBeenCalledWith(id, sourceDom, remote);
+        expect(storage.persistPendingOperation).toHaveBeenCalled();
+        expect(storage.commitMirrorBaselines).toHaveBeenCalled();
+    });
+
     it("retains pending state and reports partial when an ambiguous create failure leaves an unowned document", async () => {
         api.createDocWithMd.mockRejectedValue(new Error("connection reset"));
         api.findBlockIdentityRows

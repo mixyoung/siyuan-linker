@@ -558,6 +558,27 @@ export default class SiYuanLinker extends Plugin {
         }
     }
 
+    /**
+     * Runs a selective transfer; when the exact mirror aborts on first-sync
+     * content conflicts (no baseline yet), offers an explicit
+     * source-authoritative overwrite and retries once with that consent.
+     */
+    private async runSelectiveTransfer(docIds: string[], source: TargetConnection | undefined, destination: TargetConnection | undefined, running: string, completed: (result: { count: number; warnings: string[] }) => void) {
+        const attempt = (options?: { adoptFirstBaselineConflicts?: boolean }) =>
+            transferDocuments(docIds, this.getCurrentTransferMode(), source, destination, options);
+        try {
+            showMessage(running, -1, "info");
+            completed(await attempt());
+        } catch (error) {
+            const conflicts = error instanceof MirrorOperationError ? error.details.firstSyncConflicts ?? [] : [];
+            if (!conflicts.length || !window.confirm(this.i18n.firstSyncConflictConfirm)) {
+                throw error;
+            }
+            showMessage(running, -1, "info");
+            completed(await attempt({ adoptFirstBaselineConflicts: true }));
+        }
+    }
+
     private async runSingleTransfer() {
         if (!this.currentDocId) {
             showMessage(this.i18n.noCurrentDocument, 6000, "error");
@@ -565,10 +586,10 @@ export default class SiYuanLinker extends Plugin {
         }
         if (!await this.ensureExactModeReady() || !this.confirmSelectiveTransferScope()) return;
         try {
-            const target = this.getTargetConnection();
-            showMessage(this.i18n.transferring, -1, "info", this.i18n.singleTransfer);
-            const result = await transferDocuments([this.currentDocId], this.getCurrentTransferMode(), undefined, target);
-            this.showTransferResult(this.i18n.transferCompleted, result.warnings, this.i18n.singleTransfer);
+            await this.runSelectiveTransfer(
+                [this.currentDocId], undefined, this.getTargetConnection(), this.i18n.transferring,
+                (result) => this.showTransferResult(this.i18n.transferCompleted, result.warnings, this.i18n.singleTransfer),
+            );
         } catch (error) {
             this.reportError(this.i18n.transferFailed, error);
         } finally {
@@ -579,13 +600,13 @@ export default class SiYuanLinker extends Plugin {
     public async pullNote(docIds: string[]) {
         if (!docIds.length || !await this.ensureExactModeReady() || !this.confirmSelectiveTransferScope()) return;
         try {
-            const target = this.getTargetConnection();
-            showMessage(this.i18n.pulling, -1, "info", this.i18n.multipleTransfer);
-            const result = await transferDocuments(docIds, this.getCurrentTransferMode(), target, undefined);
-            this.showTransferResult(
-                this.i18n.notesPulled.replace("${count}", String(result.count)),
-                result.warnings,
-                this.i18n.multipleTransfer,
+            await this.runSelectiveTransfer(
+                docIds, this.getTargetConnection(), undefined, this.i18n.pulling,
+                (result) => this.showTransferResult(
+                    this.i18n.notesPulled.replace("${count}", String(result.count)),
+                    result.warnings,
+                    this.i18n.multipleTransfer,
+                ),
             );
         } catch (error) {
             this.reportError(this.i18n.pullFailed, error);

@@ -379,10 +379,22 @@ export interface ExactMirrorResult {
     operationId: string;
 }
 
+export interface ExactMirrorOptions {
+    /**
+     * Overwrite destination content for documents that have no usable
+     * baseline and currently differ from the source (first-sync conflicts,
+     * e.g. after re-pairing or a hashVersion migration). Must only be set
+     * after the user explicitly confirmed the destructive overwrite; the
+     * default stays a conservative before-write abort.
+     */
+    adoptFirstBaselineConflicts?: boolean;
+}
+
 async function mirrorDocumentsExactUnlocked(
     docIds: string[],
     source?: TargetConnection,
     destination?: TargetConnection,
+    options?: ExactMirrorOptions,
 ): Promise<ExactMirrorResult> {
     const selectedIds = [...new Set(docIds)];
     if (!selectedIds.length) return { count: 0, warnings: [], operationId: "" };
@@ -470,6 +482,7 @@ async function mirrorDocumentsExactUnlocked(
             if (missingIds.has(owner.documentId) || row.root_id !== owner.documentId) throw new Error(`Exact mirror global block ID collision: ${id}`);
         }
         const destinationSnapshots = new Map<string, MirrorDocumentSnapshot>();
+        const firstSyncConflicts: string[] = [];
         for (const entry of required.values()) {
             if (!entry.selected || !existingIds.has(entry.documentId)) continue;
             const snapshot = await captureDocumentSnapshot(entry.documentId, destination);
@@ -480,8 +493,21 @@ async function mirrorDocumentsExactUnlocked(
             const usableBaseline = storedBaseline?.hashVersion === BASELINE_HASH_VERSION ? storedBaseline : undefined;
             const classification = classifyThreeWay(sourceSnapshots.get(entry.documentId)!.baseline, snapshot.baseline, usableBaseline);
             if (classification === "destination-changed" || classification === "conflict") {
+                if (classification === "conflict" && !usableBaseline) {
+                    // No baseline: destination may legitimately hold the last
+                    // interrupted write. Never overwrite silently; report so
+                    // the UI can offer an explicit source-authoritative adopt.
+                    firstSyncConflicts.push(entry.documentId);
+                    continue;
+                }
                 throw new Error(`Exact mirror conflict for ${entry.documentId}: ${classification}`);
             }
+        }
+        if (firstSyncConflicts.length && !options?.adoptFirstBaselineConflicts) {
+            throw new MirrorOperationError(
+                `Exact mirror first-sync conflict: destination content differs from the source for ${firstSyncConflicts.join(", ")} and no sync baseline exists; adopt the source version explicitly to proceed`,
+                { state: "before-write", cause: "first-sync content conflict without baseline", firstSyncConflicts },
+            );
         }
         const sourceAssets = new Map<string, { content: Blob; sha256: string }>();
         for (const entry of required.values()) {
@@ -635,6 +661,7 @@ export async function mirrorDocumentsExact(
     docIds: string[],
     source?: TargetConnection,
     destination?: TargetConnection,
+    options?: ExactMirrorOptions,
 ): Promise<ExactMirrorResult> {
-    return withMirrorOperationLock(source, destination, () => mirrorDocumentsExactUnlocked(docIds, source, destination));
+    return withMirrorOperationLock(source, destination, () => mirrorDocumentsExactUnlocked(docIds, source, destination, options));
 }
