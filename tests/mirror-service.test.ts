@@ -252,6 +252,68 @@ describe("native exact mirror orchestration", () => {
         expect(storage.commitMirrorBaselines).toHaveBeenCalled();
     });
 
+    it("retries final verification while the destination still serves the pre-write tree", async () => {
+        const sourceDom = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true">New body</div></div>`;
+        const beforeDom = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true">Old body</div></div>`;
+        let destinationDom = beforeDom;
+        let staleReadsLeft = 0;
+        api.getBlockDOM.mockImplementation(async (_blockId: string, target?: typeof remote) =>
+            target ? (staleReadsLeft > 0 ? (staleReadsLeft -= 1, beforeDom) : destinationDom) : sourceDom);
+        api.updateBlockDOM.mockImplementation(async (_blockId: string, dom: string) => {
+            destinationDom = dom;
+            staleReadsLeft = 2;
+        });
+        api.findBlockIdentityRows.mockResolvedValue([
+            { id, parent_id: "", root_id: id, box: "box", path: `/${id}.sy`, hpath: "/Doc", type: "d", subtype: "", ial: "" },
+            { id: childId, parent_id: id, root_id: id, box: "box", path: `/${id}.sy`, hpath: "/Doc", type: "p", subtype: "", ial: "" },
+        ]);
+        const destinationBefore = await captureDocumentSnapshot(id, remote);
+        storage.inspectMirrorPair.mockResolvedValue({
+            valid: true, reasons: [], pending: false, allowedNotebookIds: ["box"],
+            sourceIdentity: { workspaceId: "source", schemaVersion: 1, createdAt: "now" },
+            destinationIdentity: { workspaceId: "destination", schemaVersion: 1, createdAt: "now" },
+            sourceRecord: { pairId: "pair", baselines: { [id]: destinationBefore.baseline }, notebookIds: ["box"] },
+            destinationRecord: { pairId: "pair", baselines: { [id]: destinationBefore.baseline }, notebookIds: ["box"] },
+        });
+
+        await expect(mirrorDocumentsExact([id], undefined, remote)).resolves.toMatchObject({ count: 1 });
+        expect(api.updateBlockDOM).toHaveBeenCalledWith(id, sourceDom, remote);
+        expect(storage.commitMirrorBaselines).toHaveBeenCalled();
+        expect(storage.clearPendingAfterVerifiedRollback).not.toHaveBeenCalled();
+    });
+
+    it("reports a first differing DOM region when final verification finds genuine divergence", async () => {
+        const sourceDom = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true">New body</div></div>`;
+        const beforeDom = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true">Old body</div></div>`;
+        const editorDom = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true">Editor overwrote this</div></div>`;
+        let destinationDom = beforeDom;
+        api.getBlockDOM.mockImplementation(async (_blockId: string, target?: typeof remote) =>
+            target ? destinationDom : sourceDom);
+        api.updateBlockDOM.mockImplementation(async () => { destinationDom = editorDom; });
+        api.findBlockIdentityRows.mockResolvedValue([
+            { id, parent_id: "", root_id: id, box: "box", path: `/${id}.sy`, hpath: "/Doc", type: "d", subtype: "", ial: "" },
+            { id: childId, parent_id: id, root_id: id, box: "box", path: `/${id}.sy`, hpath: "/Doc", type: "p", subtype: "", ial: "" },
+        ]);
+        const destinationBefore = await captureDocumentSnapshot(id, remote);
+        storage.inspectMirrorPair.mockResolvedValue({
+            valid: true, reasons: [], pending: false, allowedNotebookIds: ["box"],
+            sourceIdentity: { workspaceId: "source", schemaVersion: 1, createdAt: "now" },
+            destinationIdentity: { workspaceId: "destination", schemaVersion: 1, createdAt: "now" },
+            sourceRecord: { pairId: "pair", baselines: { [id]: destinationBefore.baseline }, notebookIds: ["box"] },
+            destinationRecord: { pairId: "pair", baselines: { [id]: destinationBefore.baseline }, notebookIds: ["box"] },
+        });
+
+        const error = await mirrorDocumentsExact([id], undefined, remote).catch((value) => value);
+        // A genuine editor overwrite matches neither the operation-owned nor
+        // the original content, so rollback refuses to clobber it and the
+        // result is reported as partial.
+        expect(error.details.state).toBe("partial");
+        expect(error.details.cause).toContain("domDiff=");
+        expect(error.details.cause).toContain("Editor overwrote this");
+        expect(error.details.rollbackErrors?.join(" ")).toContain("DOM no longer matches");
+        expect(storage.commitMirrorBaselines).not.toHaveBeenCalled();
+    });
+
     it("retains pending state and reports partial when an ambiguous create failure leaves an unowned document", async () => {
         api.createDocWithMd.mockRejectedValue(new Error("connection reset"));
         api.findBlockIdentityRows
