@@ -1,6 +1,6 @@
 {
   "name": "siyuan-linker",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "description": "Transfer notes and workspace data between local and remote SiYuan instances.",

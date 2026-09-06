@@ -540,6 +540,10 @@ export function assertReadonlySql(statement: string): string {
     return withoutTerminator;
 }
 
+export async function flushSqlQueue(target?: TargetConnection): Promise<void> {
+    await requestJson("/api/sqlite/flushTransaction", {}, "Flush SQL write queue", target);
+}
+
 export async function readonlySql(statement: string, target?: TargetConnection): Promise<SqlRow[]> {
     const stmt = assertReadonlySql(statement);
     const data = await requestJson<unknown>("/api/query/sql", { stmt, mode: "readonly" }, "Readonly SQL", target);
