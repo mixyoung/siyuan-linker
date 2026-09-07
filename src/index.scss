@@ -23,9 +23,24 @@
         border-radius: 4px;
         padding: 2px 8px;
     }
-    
+
 }
 
 .no-pointer-events {
     pointer-events: none;
+}
+
+.siyuan-linker-confirm-list {
+    margin: 0;
+    padding-left: 1.5em;
+    list-style: disc;
+
+    li + li {
+        margin-top: 8px;
+    }
+}
+
+.siyuan-linker-confirm-question {
+    margin: 16px 0 0;
+    font-weight: 500;
 }

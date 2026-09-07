@@ -1,5 +1,6 @@
 import { createApp, type App as VueApp } from "vue";
 import {
+    confirm as confirmDialog,
     Menu,
     Plugin,
     showMessage,
@@ -9,6 +10,7 @@ import {
 } from "siyuan";
 import App from "./app.vue";
 import "@/index.scss";
+import { awaitConfirmation, buildConfirmationList, escapeHtml } from "./confirmation-content";
 import { getSystemVersion, listNotebooks, validateTargetUrl, type TargetConnection } from "./siyuan-api";
 import { transferAllData, transferDocuments, type TransferMode } from "./transfer-service";
 import { SettingUtils } from "./libs/setting-utils";
@@ -463,7 +465,7 @@ export default class SiYuanLinker extends Plugin {
         if (element) element.textContent = this.formatPairingStatus(this.pairingStatus);
     }
 
-    private formatPairingStatus(status: MirrorPairStatus): string {
+    private pairingStatusItems(status: MirrorPairStatus): string[] {
         const pairId = status.sourceRecord?.pairId ?? status.destinationRecord?.pairId;
         const state = status.state === "loading"
             ? this.i18n.pairingStateLoading
@@ -486,7 +488,11 @@ export default class SiYuanLinker extends Plugin {
             `${this.i18n.remoteWorkspaceId}: ${status.destinationIdentity ? this.shortId(status.destinationIdentity.workspaceId) : this.i18n.none}`,
             `${this.i18n.allowedNotebooks}: ${status.allowedNotebookIds.length}`,
             `${this.i18n.pendingOrMismatchReasons}: ${reasons}`,
-        ].join("\n");
+        ];
+    }
+
+    private formatPairingStatus(status: MirrorPairStatus): string {
+        return this.pairingStatusItems(status).join("\n");
     }
 
     private pairingRequiredMessage(status = this.pairingStatus): string {
@@ -504,13 +510,26 @@ export default class SiYuanLinker extends Plugin {
         return false;
     }
 
-    private confirmSelectiveTransferScope(): boolean {
-        if (this.getCurrentTransferMode() === "preserve-ids") {
-            return window.confirm(
-                `${this.i18n.exactMirrorTransferWarning}\n\n${this.formatPairingStatus(this.pairingStatus)}`,
-            );
-        }
-        return window.confirm(this.i18n.independentCopyTransferWarning);
+    private confirmSelectiveTransferScope(): Promise<boolean> {
+        const items = this.getCurrentTransferMode() === "preserve-ids"
+            ? [
+                this.i18n.exactMirrorWarningIdentity,
+                this.i18n.exactMirrorWarningConflicts,
+                this.i18n.exactMirrorWarningUnsupported,
+                this.i18n.exactMirrorWarningRollback,
+                ...this.pairingStatusItems(this.pairingStatus),
+            ]
+            : [
+                this.i18n.independentCopyWarningArchive,
+                this.i18n.independentCopyWarningNewIds,
+                this.i18n.independentCopyWarningExpandedScope,
+            ];
+        return awaitConfirmation((confirm, cancel) => confirmDialog(
+            escapeHtml(this.i18n.selectiveTransferConfirmTitle),
+            buildConfirmationList(items, this.i18n.selectiveTransferContinue),
+            confirm,
+            cancel,
+        ));
     }
 
     private readonly handleDocumentSwitch = (event: DocumentEvent) => {
@@ -584,7 +603,7 @@ export default class SiYuanLinker extends Plugin {
             showMessage(this.i18n.noCurrentDocument, 6000, "error");
             return;
         }
-        if (!await this.ensureExactModeReady() || !this.confirmSelectiveTransferScope()) return;
+        if (!await this.ensureExactModeReady() || !await this.confirmSelectiveTransferScope()) return;
         try {
             await this.runSelectiveTransfer(
                 [this.currentDocId], undefined, this.getTargetConnection(), this.i18n.transferring,
@@ -598,7 +617,7 @@ export default class SiYuanLinker extends Plugin {
     }
 
     public async pullNote(docIds: string[]) {
-        if (!docIds.length || !await this.ensureExactModeReady() || !this.confirmSelectiveTransferScope()) return;
+        if (!docIds.length || !await this.ensureExactModeReady() || !await this.confirmSelectiveTransferScope()) return;
         try {
             await this.runSelectiveTransfer(
                 docIds, this.getTargetConnection(), undefined, this.i18n.pulling,

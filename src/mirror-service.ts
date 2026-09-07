@@ -109,12 +109,18 @@ function normalizeIal(ial: string): string {
     return pairs.map((pair) => `${pair.key}="${pair.value}"`).join(" ");
 }
 
-// The kernel refreshes per-node `updated` timestamps on its own schedule
-// (CreatedUpdated/RefreshUpdated during transactions), so rendered DOM can
-// differ across instances purely in volatile metadata. Identity hashing and
-// ownership comparisons use the DOM with those attributes removed.
+const EMPTY_EXTERNAL_LINK_BEFORE_VISIBLE_URL = /<span(?=[^>]*\sdata-type="a"(?:\s|>))(?=[^>]*\sdata-href="(https?:\/\/[^"]+)")[^>]*><\/span>\1(?=$|[\s<])/g;
+const TABLE_CELL_CARET_SPACES_BEFORE_INLINE_IMAGE = /(<td(?:\s[^>]*)?>)\u200B+(?=<span(?=[^>]*\sdata-type="img"(?:\s|>))(?=[^>]*\scontenteditable="false"(?:\s|>))[^>]*>)/g;
+
+// The kernel refreshes per-node `updated` timestamps on its own schedule,
+// drops empty external-link marks before identical visible URLs, and can add
+// zero-width caret placeholders before a leading read-only image in a table
+// cell. Identity comparisons canonicalize only those known equivalents.
 export function normalizeDom(dom: string): string {
-    return (dom ?? "").replace(/\s+updated="\d{14}"/g, "");
+    return (dom ?? "")
+        .replace(/\s+updated="\d{14}"/g, "")
+        .replace(EMPTY_EXTERNAL_LINK_BEFORE_VISIBLE_URL, "$1")
+        .replace(TABLE_CELL_CARET_SPACES_BEFORE_INLINE_IMAGE, "$1\u200B");
 }
 
 function sameRenderedDom(left: string, right: string): boolean {
