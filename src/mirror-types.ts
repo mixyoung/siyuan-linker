@@ -1,4 +1,7 @@
 import type { BlockAttrs, BlockIdentityRow } from "./siyuan-api";
+import type { DeletionTombstone, NotebookMapping, SyncProfile, SyncScope } from "./sync-types";
+
+export * from "./sync-types";
 
 export const MIRROR_SCHEMA_VERSION = 1 as const;
 export const WORKSPACE_IDENTITY_PATH = "data/storage/petal/siyuan-linker/workspace-identity.json";
@@ -25,6 +28,7 @@ export interface MirrorDocumentBaseline {
     documentId: string;
     notebookId: string;
     path: string;
+    logicalPath?: string;
     hpath: string;
     domSha256: string;
     identityRowsSha256: string;
@@ -50,6 +54,9 @@ export interface PendingMirrorOperation {
     destinationWorkspaceId: string;
     documentIds: string[];
     startedAt: string;
+    scope?: SyncScope;
+    notebookIds?: string[];
+    actionsCount?: number;
 }
 
 export interface MirrorPeerRecord {
@@ -61,6 +68,10 @@ export interface MirrorPeerRecord {
     updatedAt: string;
     baselines: Record<string, MirrorDocumentBaseline>;
     pendingOperation?: PendingMirrorOperation;
+    notebookMappings?: NotebookMapping[];
+    tombstones?: Record<string, DeletionTombstone>;
+    generation?: number;
+    profiles?: SyncProfile[];
 }
 
 export interface MirrorLineageStore {

@@ -1,4 +1,5 @@
 import {
+    createNotebook,
     downloadWorkspaceFileIfExists,
     listNotebooks,
     writeFile,
@@ -8,12 +9,15 @@ import {
     MIRROR_LINEAGES_PATH,
     MIRROR_SCHEMA_VERSION,
     WORKSPACE_IDENTITY_PATH,
+    type DeletionTombstone,
     type MirrorDocumentBaseline,
     type MirrorLineageStore,
     type MirrorPairingResult,
     type MirrorPairStatus,
     type MirrorPeerRecord,
+    type NotebookMapping,
     type PendingMirrorOperation,
+    type SyncProfile,
     type WorkspaceIdentity,
 } from "./mirror-types";
 
@@ -107,10 +111,60 @@ function parsePending(value: unknown): PendingMirrorOperation | undefined {
         || !Array.isArray(item.documentIds) || item.documentIds.some((id) => typeof id !== "string")) {
         throw new Error("Mirror lineages: invalid pending operation");
     }
-    return {
+    const result: PendingMirrorOperation = {
         operationId: String(item.operationId), pairId: String(item.pairId), sourceWorkspaceId: String(item.sourceWorkspaceId),
         destinationWorkspaceId: String(item.destinationWorkspaceId), documentIds: [...item.documentIds] as string[], startedAt: String(item.startedAt),
     };
+    if (typeof item.scope === "string") result.scope = item.scope as any;
+    if (Array.isArray(item.notebookIds)) result.notebookIds = [...item.notebookIds] as string[];
+    if (typeof item.actionsCount === "number") result.actionsCount = item.actionsCount;
+    return result;
+}
+
+function parseNotebookMappings(value: unknown): NotebookMapping[] | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) throw new Error("Mirror lineages: invalid notebook mappings");
+    return value.map((item, index) => {
+        if (!item || typeof item !== "object" || typeof (item as Record<string, unknown>).localNotebookId !== "string"
+            || typeof (item as Record<string, unknown>).remoteNotebookId !== "string") {
+            throw new Error(`Mirror lineages: invalid notebook mapping at index ${index}`);
+        }
+        return {
+            localNotebookId: String((item as Record<string, unknown>).localNotebookId),
+            remoteNotebookId: String((item as Record<string, unknown>).remoteNotebookId),
+        };
+    });
+}
+
+function parseTombstones(value: unknown): Record<string, DeletionTombstone> | undefined {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Mirror lineages: invalid tombstones");
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`Mirror lineages: invalid tombstone ${key}`);
+        const t = item as Record<string, unknown>;
+        if (typeof t.objectType !== "string" || typeof t.objectId !== "string"
+            || typeof t.deletedByWorkspaceId !== "string" || typeof t.deletedAt !== "string"
+            || typeof t.previousFingerprint !== "string") {
+            throw new Error(`Mirror lineages: invalid tombstone ${key}`);
+        }
+        return [key, {
+            objectType: t.objectType as "notebook" | "document" | "asset",
+            objectId: String(t.objectId),
+            logicalPath: typeof t.logicalPath === "string" ? t.logicalPath : undefined,
+            deletedByWorkspaceId: String(t.deletedByWorkspaceId),
+            deletedAt: String(t.deletedAt),
+            previousFingerprint: String(t.previousFingerprint),
+            resolved: typeof t.resolved === "boolean" ? t.resolved : undefined,
+        }];
+    }));
+}
+
+function parseGeneration(value: unknown): number | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+        throw new Error("Mirror lineages: invalid generation");
+    }
+    return value;
 }
 
 function parseRecord(value: unknown, localId: string, peerId: string): MirrorPeerRecord {
@@ -122,11 +176,18 @@ function parseRecord(value: unknown, localId: string, peerId: string): MirrorPee
         throw new Error(`Mirror lineages: invalid peer ${peerId}`);
     }
     const baselines = Object.fromEntries(Object.entries(item.baselines as Record<string, unknown>).map(([key, baseline]) => [key, parseBaseline(baseline, key)]));
-    return {
+    const notebookMappings = parseNotebookMappings(item.notebookMappings);
+    const tombstones = parseTombstones(item.tombstones);
+    const generation = parseGeneration(item.generation);
+    const record: MirrorPeerRecord = {
         pairId: String(item.pairId), localWorkspaceId: localId, peerWorkspaceId: peerId,
         notebookIds: sortedUnique(item.notebookIds as string[]), createdAt: String(item.createdAt), updatedAt: String(item.updatedAt),
         baselines, pendingOperation: parsePending(item.pendingOperation),
     };
+    if (notebookMappings) record.notebookMappings = notebookMappings;
+    if (tombstones) record.tombstones = tombstones;
+    if (generation !== undefined) record.generation = generation;
+    return record;
 }
 
 function parseStore(value: unknown, workspaceId: string): MirrorLineageStore {
@@ -188,13 +249,45 @@ function pendingMatches(actual: PendingMirrorOperation | undefined, expected: Pe
     return JSON.stringify(actual ?? null) === JSON.stringify(expected);
 }
 
+function canonicalMappings(record: MirrorPeerRecord): string {
+    const mappings = record.notebookMappings ?? [];
+    const isLocalSmaller = record.localWorkspaceId < record.peerWorkspaceId;
+    const pairs = mappings.map((m) =>
+        isLocalSmaller
+            ? `${m.localNotebookId}=>${m.remoteNotebookId}`
+            : `${m.remoteNotebookId}=>${m.localNotebookId}`
+    );
+    return JSON.stringify(sortedUnique(pairs));
+}
+
+function canonicalTombstones(record: MirrorPeerRecord): string {
+    const tombstones = record.tombstones ?? {};
+    return JSON.stringify(
+        Object.fromEntries(Object.entries(tombstones).sort(([a], [b]) => a.localeCompare(b)))
+    );
+}
+
+function notebooksMatch(left: MirrorPeerRecord, right: MirrorPeerRecord): boolean {
+    if (JSON.stringify(sortedUnique(left.notebookIds)) === JSON.stringify(sortedUnique(right.notebookIds))) {
+        return true;
+    }
+    const mappingMap = new Map<string, string>();
+    for (const m of left.notebookMappings ?? []) {
+        mappingMap.set(m.localNotebookId, m.remoteNotebookId);
+    }
+    const translatedLeft = sortedUnique(left.notebookIds.map((id) => mappingMap.get(id) ?? id));
+    return JSON.stringify(translatedLeft) === JSON.stringify(sortedUnique(right.notebookIds));
+}
+
 function recordsMatch(left: MirrorPeerRecord, right: MirrorPeerRecord): boolean {
     const canonicalBaselines = (record: MirrorPeerRecord) => JSON.stringify(
         Object.fromEntries(Object.entries(record.baselines).sort(([leftId], [rightId]) => leftId.localeCompare(rightId))),
     );
     return left.pairId === right.pairId && left.localWorkspaceId === right.peerWorkspaceId && left.peerWorkspaceId === right.localWorkspaceId
-        && JSON.stringify(sortedUnique(left.notebookIds)) === JSON.stringify(sortedUnique(right.notebookIds))
+        && notebooksMatch(left, right)
         && canonicalBaselines(left) === canonicalBaselines(right)
+        && canonicalMappings(left) === canonicalMappings(right)
+        && canonicalTombstones(left) === canonicalTombstones(right)
         && JSON.stringify(left.pendingOperation ?? null) === JSON.stringify(right.pendingOperation ?? null);
 }
 
@@ -255,9 +348,13 @@ async function pairMirrorWorkspacesUnlocked(source?: TargetConnection, destinati
     const previousSourceStore = structuredClone(sourceStore);
     const pairId = newUuid();
     const timestamp = now();
+    const notebookMappings: NotebookMapping[] = notebookIds.map((id) => ({
+        localNotebookId: id,
+        remoteNotebookId: id,
+    }));
     const sourceRecord: MirrorPeerRecord = {
         pairId, localWorkspaceId: sourceIdentity.workspaceId, peerWorkspaceId: destinationIdentity.workspaceId,
-        notebookIds, createdAt: timestamp, updatedAt: timestamp, baselines: {},
+        notebookIds, notebookMappings, createdAt: timestamp, updatedAt: timestamp, baselines: {},
     };
     const destinationRecord: MirrorPeerRecord = {
         ...sourceRecord, localWorkspaceId: destinationIdentity.workspaceId, peerWorkspaceId: sourceIdentity.workspaceId,
@@ -358,6 +455,172 @@ export async function commitMirrorBaselines(
         }
         sourceRecord.baselines = { ...sourceRecord.baselines, ...baselines };
         destinationRecord.baselines = { ...destinationRecord.baselines, ...baselines };
+        delete sourceRecord.pendingOperation;
+        delete destinationRecord.pendingOperation;
+    });
+}
+
+export function resolveNotebookMapping(record: MirrorPeerRecord, localNotebookId: string): string | undefined {
+    if (record.notebookMappings && record.notebookMappings.length > 0) {
+        const found = record.notebookMappings.find((m) => m.localNotebookId === localNotebookId);
+        if (found) return found.remoteNotebookId;
+    }
+    if (record.notebookIds.includes(localNotebookId)) {
+        return localNotebookId;
+    }
+    return undefined;
+}
+
+export function resolveReverseNotebookMapping(record: MirrorPeerRecord, remoteNotebookId: string): string | undefined {
+    if (record.notebookMappings && record.notebookMappings.length > 0) {
+        const found = record.notebookMappings.find((m) => m.remoteNotebookId === remoteNotebookId);
+        if (found) return found.localNotebookId;
+    }
+    if (record.notebookIds.includes(remoteNotebookId)) {
+        return remoteNotebookId;
+    }
+    return undefined;
+}
+
+export async function addNotebookMapping(
+    source: TargetConnection | undefined,
+    destination: TargetConnection | undefined,
+    mapping: NotebookMapping,
+): Promise<void> {
+    await updateMatchingPeerRecords(source, destination, (sourceRecord, destinationRecord) => {
+        const sourceMappings = sourceRecord.notebookMappings ?? [];
+        const destinationMappings = destinationRecord.notebookMappings ?? [];
+
+        if (sourceMappings.some((m) => m.localNotebookId === mapping.localNotebookId && m.remoteNotebookId !== mapping.remoteNotebookId)) {
+            throw new Error(`Notebook mapping conflict: local notebook ${mapping.localNotebookId} is already mapped`);
+        }
+        if (sourceMappings.some((m) => m.remoteNotebookId === mapping.remoteNotebookId && m.localNotebookId !== mapping.localNotebookId)) {
+            throw new Error(`Notebook mapping conflict: remote notebook ${mapping.remoteNotebookId} is already mapped`);
+        }
+
+        const filteredSource = sourceMappings.filter((m) => m.localNotebookId !== mapping.localNotebookId);
+        filteredSource.push(mapping);
+        sourceRecord.notebookMappings = filteredSource;
+        if (!sourceRecord.notebookIds.includes(mapping.localNotebookId)) {
+            sourceRecord.notebookIds = sortedUnique([...sourceRecord.notebookIds, mapping.localNotebookId]);
+        }
+
+        const invertedMapping: NotebookMapping = {
+            localNotebookId: mapping.remoteNotebookId,
+            remoteNotebookId: mapping.localNotebookId,
+        };
+        const filteredDest = destinationMappings.filter((m) => m.localNotebookId !== invertedMapping.localNotebookId);
+        filteredDest.push(invertedMapping);
+        destinationRecord.notebookMappings = filteredDest;
+        if (!destinationRecord.notebookIds.includes(mapping.remoteNotebookId)) {
+            destinationRecord.notebookIds = sortedUnique([...destinationRecord.notebookIds, mapping.remoteNotebookId]);
+        }
+    });
+}
+
+export async function createAndMapNotebook(
+    sourceNotebookId: string,
+    destinationNotebookName: string,
+    source?: TargetConnection,
+    destination?: TargetConnection,
+): Promise<{ id: string; name: string }> {
+    const status = await inspectMirrorPair(source, destination);
+    if (!status.valid || !status.sourceRecord) {
+        throw new Error("Cannot create and map notebook: pairing is not valid");
+    }
+    const existing = resolveNotebookMapping(status.sourceRecord, sourceNotebookId);
+    if (existing && existing !== sourceNotebookId) {
+        throw new Error(`Source notebook ${sourceNotebookId} is already mapped to ${existing}`);
+    }
+    const notebook = await createNotebook(destinationNotebookName, destination);
+    await addNotebookMapping(source, destination, {
+        localNotebookId: sourceNotebookId,
+        remoteNotebookId: notebook.id,
+    });
+    return notebook;
+}
+
+export async function recordDeletionTombstones(
+    source: TargetConnection | undefined,
+    destination: TargetConnection | undefined,
+    tombstones: DeletionTombstone[],
+): Promise<void> {
+    if (!tombstones.length) return;
+    await updateMatchingPeerRecords(source, destination, (sourceRecord, destinationRecord) => {
+        const sourceTombstones = { ...(sourceRecord.tombstones ?? {}) };
+        const destTombstones = { ...(destinationRecord.tombstones ?? {}) };
+        for (const t of tombstones) {
+            sourceTombstones[t.objectId] = t;
+            destTombstones[t.objectId] = t;
+        }
+        sourceRecord.tombstones = sourceTombstones;
+        destinationRecord.tombstones = destTombstones;
+    });
+}
+
+export async function clearDeletionTombstones(
+    source: TargetConnection | undefined,
+    destination: TargetConnection | undefined,
+    objectIds: string[],
+): Promise<void> {
+    if (!objectIds.length) return;
+    await updateMatchingPeerRecords(source, destination, (sourceRecord, destinationRecord) => {
+        const sourceTombstones = { ...(sourceRecord.tombstones ?? {}) };
+        const destTombstones = { ...(destinationRecord.tombstones ?? {}) };
+        for (const id of objectIds) {
+            delete sourceTombstones[id];
+            delete destTombstones[id];
+        }
+        sourceRecord.tombstones = sourceTombstones;
+        destinationRecord.tombstones = destTombstones;
+    });
+}
+
+export async function commitSyncBaselines(
+    baselines: Record<string, MirrorDocumentBaseline>,
+    pending: PendingMirrorOperation,
+    source?: TargetConnection,
+    destination?: TargetConnection,
+    options?: {
+        tombstonesToRecord?: DeletionTombstone[];
+        tombstonesToClear?: string[];
+        advanceGeneration?: boolean;
+    },
+): Promise<void> {
+    await assertPendingOperationOwnership(pending, source, destination);
+    await updateMatchingPeerRecords(source, destination, (sourceRecord, destinationRecord) => {
+        if (!pendingMatches(sourceRecord.pendingOperation, pending) || !pendingMatches(destinationRecord.pendingOperation, pending)) {
+            throw new Error("Pending mirror operation no longer matches exactly");
+        }
+        sourceRecord.baselines = { ...sourceRecord.baselines, ...baselines };
+        destinationRecord.baselines = { ...destinationRecord.baselines, ...baselines };
+
+        if (options?.tombstonesToRecord?.length) {
+            const sTomb = { ...(sourceRecord.tombstones ?? {}) };
+            const dTomb = { ...(destinationRecord.tombstones ?? {}) };
+            for (const t of options.tombstonesToRecord) {
+                sTomb[t.objectId] = t;
+                dTomb[t.objectId] = t;
+            }
+            sourceRecord.tombstones = sTomb;
+            destinationRecord.tombstones = dTomb;
+        }
+        if (options?.tombstonesToClear?.length) {
+            const sTomb = { ...(sourceRecord.tombstones ?? {}) };
+            const dTomb = { ...(destinationRecord.tombstones ?? {}) };
+            for (const id of options.tombstonesToClear) {
+                delete sTomb[id];
+                delete dTomb[id];
+            }
+            sourceRecord.tombstones = sTomb;
+            destinationRecord.tombstones = dTomb;
+        }
+        if (options?.advanceGeneration) {
+            const nextGen = (sourceRecord.generation ?? 0) + 1;
+            sourceRecord.generation = nextGen;
+            destinationRecord.generation = nextGen;
+        }
+
         delete sourceRecord.pendingOperation;
         delete destinationRecord.pendingOperation;
     });

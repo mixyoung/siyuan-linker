@@ -11,16 +11,18 @@ import {
 import App from "./app.vue";
 import "@/index.scss";
 import { awaitConfirmation, buildConfirmationList, escapeHtml } from "./confirmation-content";
-import { getSystemVersion, listNotebooks, validateTargetUrl, type TargetConnection } from "./siyuan-api";
+import { getDocumentLocation, getSystemVersion, listNotebooks, readonlySql, validateTargetUrl, type TargetConnection } from "./siyuan-api";
 import { transferAllData, transferDocuments, type TransferMode } from "./transfer-service";
 import { SettingUtils } from "./libs/setting-utils";
 import {
     ADOPT_FULL_CLONE_CONFIRMATION,
     adoptFullCloneDestination,
+    createAndMapNotebook,
     inspectMirrorPair,
     pairMirrorWorkspaces,
     resetMirrorPeer,
 } from "./mirror-storage";
+import { collectDescendantIds } from "./sync-adapters";
 import { MirrorOperationError, type MirrorPairStatus } from "./mirror-types";
 import { migrateTransferModeSettings, type PersistedTransferMode } from "./settings-migration";
 
@@ -208,6 +210,14 @@ export default class SiYuanLinker extends Plugin {
             title: this.i18n.resetPairing,
             description: this.i18n.resetPairingDescription,
             button: { label: this.i18n.reset, callback: () => void this.resetActiveTargetPairing() },
+        });
+        this.settingUtils.addItem({
+            key: "createAndMapNotebook",
+            value: "",
+            type: "button",
+            title: this.i18n.createAndMapNotebook,
+            description: this.i18n.notebookMapping,
+            button: { label: this.i18n.mapNotebook, callback: () => void this.promptCreateAndMapNotebook() },
         });
         this.settingUtils.addItem({
             key: "pairingStatus",
@@ -543,12 +553,51 @@ export default class SiYuanLinker extends Plugin {
         this.currentDocId = activeTitle?.dataset.nodeId ?? this.currentDocId;
     }
 
+    public async promptCreateAndMapNotebook(): Promise<void> {
+        if (this.pairingActionInProgress) return;
+        try {
+            const localNotebooks = await listNotebooks();
+            if (!localNotebooks.length) {
+                showMessage(this.i18n.noNotebooks, 6000, "error");
+                return;
+            }
+            const nbNames = localNotebooks.map((nb, i) => `${i + 1}. ${nb.name} (${nb.id})`).join("\n");
+            const choice = window.prompt(`请选择本地笔记本编号 (1-${localNotebooks.length}):\n${nbNames}`);
+            if (!choice) return;
+            const index = parseInt(choice, 10) - 1;
+            if (isNaN(index) || index < 0 || index >= localNotebooks.length) {
+                showMessage("无效的笔记本编号", 6000, "error");
+                return;
+            }
+            const selectedNb = localNotebooks[index];
+            const targetName = window.prompt(`目标端笔记本名称:`, selectedNb.name);
+            if (!targetName) return;
+
+            const target = this.getTargetConnection();
+            this.setPairingActionsBusy(true);
+            showMessage(this.i18n.validating, -1, "info");
+            const created = await createAndMapNotebook(selectedNb.id, targetName, undefined, target);
+            await this.refreshPairingStatus();
+            showMessage(`已在目标端创建并映射笔记本: ${created.name} (${created.id})`, 6000, "info");
+        } catch (error) {
+            await this.refreshPairingStatus();
+            this.reportError(this.i18n.pairingFailed, error);
+        } finally {
+            this.setPairingActionsBusy(false);
+        }
+    }
+
     private openTransferMenu(rect?: DOMRect) {
         const menu = new Menu("siyuan-linker-transfer-menu");
         menu.addItem({
             icon: "iconLinker",
             label: this.i18n.transferCurrentNote,
-            click: () => void this.runSingleTransfer(),
+            click: () => void this.runSingleTransfer(false),
+        });
+        menu.addItem({
+            icon: "iconLinker",
+            label: this.i18n.transferCurrentNoteTree,
+            click: () => void this.runSingleTransfer(true),
         });
         menu.open({ x: rect?.right ?? 0, y: rect?.bottom ?? 0, isLeft: true });
     }
@@ -598,15 +647,26 @@ export default class SiYuanLinker extends Plugin {
         }
     }
 
-    private async runSingleTransfer() {
+    private async runSingleTransfer(includeDescendants = false) {
         if (!this.currentDocId) {
             showMessage(this.i18n.noCurrentDocument, 6000, "error");
             return;
         }
         if (!await this.ensureExactModeReady() || !await this.confirmSelectiveTransferScope()) return;
         try {
+            let docIds = [this.currentDocId];
+            if (includeDescendants) {
+                try {
+                    const loc = await getDocumentLocation(this.currentDocId);
+                    const rows = await readonlySql(`SELECT id, parent_id, root_id, box, path, hpath FROM blocks WHERE type = 'd' AND box = '${loc.notebookId}'`);
+                    const descIds = collectDescendantIds(this.currentDocId, rows as unknown as Array<{ id: string; parent_id: string; root_id: string; box: string; path: string; hpath: string }>);
+                    docIds = [...new Set([this.currentDocId, ...descIds])];
+                } catch (error) {
+                    console.warn("Unable to enumerate descendants, falling back to current note", error);
+                }
+            }
             await this.runSelectiveTransfer(
-                [this.currentDocId], undefined, this.getTargetConnection(), this.i18n.transferring,
+                docIds, undefined, this.getTargetConnection(), this.i18n.transferring,
                 (result) => this.showTransferResult(this.i18n.transferCompleted, result.warnings, this.i18n.singleTransfer),
             );
         } catch (error) {
