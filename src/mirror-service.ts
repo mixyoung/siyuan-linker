@@ -110,15 +110,17 @@ function normalizeIal(ial: string): string {
 }
 
 const EMPTY_EXTERNAL_LINK_BEFORE_VISIBLE_URL = /<span(?=[^>]*\sdata-type="a"(?:\s|>))(?=[^>]*\sdata-href="(https?:\/\/[^"]+)")[^>]*><\/span>\1(?=$|[\s<])/g;
+const TABLE_CELL_CARET_SPACES_BEFORE_INLINE_IMAGE = /(<td(?:\s[^>]*)?>)\u200B+(?=<span(?=[^>]*\sdata-type="img"(?:\s|>))(?=[^>]*\scontenteditable="false"(?:\s|>))[^>]*>)/g;
 
-// The kernel refreshes per-node `updated` timestamps on its own schedule and
-// drops an empty external-link mark when its href is repeated immediately as
-// visible text. Identity comparisons canonicalize only those known equivalent
-// forms; non-empty links and links whose following text differs stay distinct.
+// The kernel refreshes per-node `updated` timestamps on its own schedule,
+// drops empty external-link marks before identical visible URLs, and can add
+// zero-width caret placeholders before a leading read-only image in a table
+// cell. Identity comparisons canonicalize only those known equivalents.
 export function normalizeDom(dom: string): string {
     return (dom ?? "")
         .replace(/\s+updated="\d{14}"/g, "")
-        .replace(EMPTY_EXTERNAL_LINK_BEFORE_VISIBLE_URL, "$1");
+        .replace(EMPTY_EXTERNAL_LINK_BEFORE_VISIBLE_URL, "$1")
+        .replace(TABLE_CELL_CARET_SPACES_BEFORE_INLINE_IMAGE, "$1\u200B");
 }
 
 function sameRenderedDom(left: string, right: string): boolean {

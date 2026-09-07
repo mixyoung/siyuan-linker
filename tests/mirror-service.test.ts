@@ -134,6 +134,25 @@ describe("mirror baseline and conflict rules", () => {
         expect(normalizeDom(`<div><span custom-data-type="a" custom-data-href="${url}"></span>${url}</div>`))
             .not.toBe(normalizeDom(`<div>${url}</div>`));
     });
+
+    it("normalizes repeated caret placeholders only before a leading read-only image in a table cell", () => {
+        const image = '<span contenteditable="false" data-type="img" class="img"><span><img src="assets/example.png"></span></span>';
+        const source = `<table><tbody><tr><td>\u200B\u200B${image}</td></tr></tbody></table>`;
+        const destination = `<table><tbody><tr><td>\u200B\u200B\u200B${image}</td></tr></tbody></table>`;
+        expect(normalizeDom(source)).toBe(normalizeDom(destination));
+        expect(normalizeDom(source)).toContain(`\u200B${image}`);
+
+        expect(normalizeDom("<p>before\u200B\u200Bafter</p>"))
+            .not.toBe(normalizeDom("<p>before\u200Bafter</p>"));
+        expect(normalizeDom(`<p>\u200B\u200B${image}</p>`))
+            .not.toBe(normalizeDom(`<p>\u200B${image}</p>`));
+        expect(normalizeDom(`<td>text\u200B\u200B${image}</td>`))
+            .not.toBe(normalizeDom(`<td>text\u200B${image}</td>`));
+        expect(normalizeDom(`<td>\u200B\u200B<span contenteditable="true" data-type="img"></span></td>`))
+            .not.toBe(normalizeDom(`<td>\u200B<span contenteditable="true" data-type="img"></span></td>`));
+        expect(normalizeDom(`<td>\u200B\u200B<span contenteditable="false" custom-data-type="img"></span></td>`))
+            .not.toBe(normalizeDom(`<td>\u200B<span contenteditable="false" custom-data-type="img"></span></td>`));
+    });
 });
 
 describe("native exact mirror orchestration", () => {
@@ -169,6 +188,20 @@ describe("native exact mirror orchestration", () => {
                 hashVersion: BASELINE_HASH_VERSION,
                 documentId: id,
             }),
+        }, expect.objectContaining({ operationId: expect.any(String), pairId: "pair" }), undefined, remote);
+        expect(storage.clearPendingAfterVerifiedRollback).not.toHaveBeenCalled();
+    });
+
+    it("accepts an extra kernel caret placeholder before a table-cell inline image", async () => {
+        const image = '<span contenteditable="false" data-type="img" class="img"><span><img src="assets/example.png"></span></span>';
+        const sourceDom = `<div data-node-id="${childId}" data-type="NodeTable"><table><tbody><tr><td>\u200B\u200B${image}</td></tr></tbody></table></div>`;
+        const destinationDom = `<div data-node-id="${childId}" data-type="NodeTable"><table><tbody><tr><td>\u200B\u200B\u200B${image}</td></tr></tbody></table></div>`;
+        api.getBlockDOM.mockImplementation(async (_blockId: string, target?: typeof remote) => target ? destinationDom : sourceDom);
+
+        await expect(mirrorDocumentsExact([id], undefined, remote)).resolves.toMatchObject({ count: 1 });
+        expect(api.updateBlockDOM).toHaveBeenCalledWith(id, sourceDom, remote);
+        expect(storage.commitMirrorBaselines).toHaveBeenCalledWith({
+            [id]: expect.objectContaining({ hashVersion: BASELINE_HASH_VERSION, documentId: id }),
         }, expect.objectContaining({ operationId: expect.any(String), pairId: "pair" }), undefined, remote);
         expect(storage.clearPendingAfterVerifiedRollback).not.toHaveBeenCalled();
     });
