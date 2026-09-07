@@ -1,12 +1,7 @@
 import {
     assertNodeId,
-    assertNotebookId,
-    compareVersions,
     getDocumentLocation,
-    getHPathByID,
-    isEncryptedNotebook,
     listNotebooks,
-    openNotebook,
     readonlySql,
     type TargetConnection,
 } from "./siyuan-api";
@@ -16,7 +11,6 @@ import {
 import {
     inspectMirrorPair,
     readWorkspaceIdentity,
-    resolveNotebookMapping,
 } from "./mirror-storage";
 import type {
     DocumentRootSelection,
@@ -24,10 +18,8 @@ import type {
     ScopeSnapshot,
     ScopeSnapshotItem,
     SyncProfile,
-    SyncScope,
     SyncScopeAdapter,
 } from "./sync-types";
-import { MIN_SIYUAN_VERSION } from "./transfer-service";
 
 export function buildLogicalPath(notebookId: string, rawPath: string): string {
     let p = rawPath.trim();
@@ -198,7 +190,6 @@ export class DocumentScopeAdapter extends BaseScopeAdapter implements SyncScopeA
         const allDocIdsToCapture = new Set<string>([...ancestorDocEntries.keys(), ...selectedDocIds]);
 
         for (const docId of allDocIdsToCapture) {
-            const isSelected = selectedDocIds.has(docId);
             const snapshot = await captureDocumentSnapshot(docId, this.source);
             const logicalPath = this.buildLogicalPath(snapshot.notebookId, snapshot.path);
             const ancestorEntry = ancestorDocEntries.get(docId);
@@ -243,7 +234,6 @@ export class DocumentScopeAdapter extends BaseScopeAdapter implements SyncScopeA
         for (const [docId, sourceItem] of sourceSnapshot.items) {
             try {
                 const snapshot = await captureDocumentSnapshot(docId, this.destination);
-                const destNotebookId = this.resolveDestinationNotebookId(sourceItem.notebookId);
                 const logicalPath = this.buildLogicalPath(snapshot.notebookId, snapshot.path);
 
                 items.set(docId, {

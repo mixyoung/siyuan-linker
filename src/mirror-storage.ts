@@ -17,7 +17,6 @@ import {
     type MirrorPeerRecord,
     type NotebookMapping,
     type PendingMirrorOperation,
-    type SyncProfile,
     type WorkspaceIdentity,
 } from "./mirror-types";
 

@@ -1,6 +1,5 @@
 import {
     createDocWithMd,
-    downloadWorkspaceFile,
     downloadWorkspaceFileIfExists,
     getBlockAttrs,
     getBlockDOM,
@@ -13,18 +12,15 @@ import {
     type TargetConnection,
 } from "./siyuan-api";
 import {
-    BASELINE_HASH_VERSION,
     MirrorOperationError,
     type DeletionTombstone,
     type MirrorDocumentBaseline,
-    type MirrorDocumentSnapshot,
     type PendingMirrorOperation,
 } from "./mirror-types";
 import {
     buildAttributePatch,
     captureDocumentSnapshot,
     filterManagedRootAttrs,
-    normalizeDom,
     sha256,
 } from "./mirror-service";
 import {
@@ -37,7 +33,6 @@ import {
     withMirrorOperationLock,
 } from "./mirror-storage";
 import type {
-    SyncAction,
     SyncPlan,
     SyncProfile,
 } from "./sync-types";
@@ -80,7 +75,6 @@ export class SyncExecutor {
         const operationId = crypto.randomUUID();
         const startedAt = new Date().toISOString();
         const targetEndpoint = plan.profile.direction === "pull" ? source : destination;
-        const sourceEndpoint = plan.profile.direction === "pull" ? destination : source;
 
         const allDocIds = [
             ...plan.creates.map((a) => a.objectId),

@@ -1,14 +1,8 @@
 import type {
-    MirrorConflictClassification,
     MirrorDocumentBaseline,
-    MirrorDocumentSnapshot,
 } from "./mirror-types";
 import type {
-    ConflictAuthority,
-    DeletionPolicy,
-    ExtendedConflictClassification,
     ScopeSnapshot,
-    ScopeSnapshotItem,
     SyncAction,
     SyncConflict,
     SyncPlan,
