@@ -13,13 +13,50 @@
     font-weight: 500;
 }
 
-/* 设置界面横向分块与卡片化布局系统 */
-.siyuan-linker-section-header {
-    width: 100%;
-    margin-top: 18px;
-    margin-bottom: 8px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--b3-border-color);
+/* 彻底清除思源为设置项默认添加的底部横线与内边距 */
+label.b3-label:has(.siyuan-linker-section),
+label.b3-label:has(.siyuan-linker-section-block) {
+    border-bottom: none !important;
+    padding: 0 !important;
+    margin-bottom: 16px !important;
+    display: block !important;
+    background: transparent !important;
+}
+
+/* 大板块基础容器卡片 */
+.siyuan-linker-section {
+    border-radius: 8px;
+    padding: 16px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    transition: background 0.2s, border-color 0.2s;
+
+    /* 板块一：目标服务配置（科技蓝调） */
+    &--servers {
+        background: rgba(59, 130, 246, 0.04);
+        border: 1px solid rgba(59, 130, 246, 0.22);
+    }
+
+    /* 板块二：数据同步与传输（紫罗兰/数据流调） */
+    &--sync {
+        background: rgba(139, 92, 246, 0.04);
+        border: 1px solid rgba(139, 92, 246, 0.22);
+    }
+
+    /* 板块三：通用与安全设置（中性石板灰调） */
+    &--general {
+        background: rgba(100, 116, 139, 0.04);
+        border: 1px solid rgba(100, 116, 139, 0.2);
+    }
+
+    &__header {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        margin-bottom: 2px;
+    }
 
     &__title {
         font-size: 15px;
@@ -27,30 +64,30 @@
         color: var(--b3-theme-on-background);
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 8px;
     }
 
     &__desc {
         font-size: 12px;
         color: var(--b3-theme-on-surface);
-        opacity: 0.75;
-        margin-top: 3px;
+        opacity: 0.8;
     }
 }
 
+/* 横向网格布局 */
 .siyuan-linker-grid-2col {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
     width: 100%;
-    margin-top: 8px;
-    margin-bottom: 8px;
+    box-sizing: border-box;
 
     @media (max-width: 640px) {
         grid-template-columns: 1fr;
     }
 }
 
+/* 子功能卡片样式 */
 .siyuan-linker-card {
     background: var(--b3-theme-surface);
     border: 1px solid var(--b3-border-color);
@@ -59,11 +96,30 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    transition: border-color 0.2s, box-shadow 0.2s;
+    box-sizing: border-box;
+    transition: all 0.2s ease;
 
     &--active {
-        border-color: var(--b3-theme-primary);
+        border: 1.5px solid var(--b3-theme-primary) !important;
         box-shadow: 0 0 0 1px var(--b3-theme-primary);
+    }
+
+    /* 持续镜像子卡片：薄荷翡翠绿调 */
+    &--mirror {
+        background: rgba(16, 185, 129, 0.05);
+        border-color: rgba(16, 185, 129, 0.25);
+    }
+
+    /* 传输模式子卡片：晴空天蓝调 */
+    &--mode {
+        background: rgba(14, 165, 233, 0.05);
+        border-color: rgba(14, 165, 233, 0.25);
+    }
+
+    /* 全量迁移高危子卡片：暖琥珀警示调 */
+    &--migration {
+        background: rgba(245, 158, 11, 0.06);
+        border-color: rgba(245, 158, 11, 0.3);
     }
 
     &__header {
@@ -77,14 +133,17 @@
         font-weight: 600;
         font-size: 13px;
         color: var(--b3-theme-on-background);
+        display: flex;
+        align-items: center;
+        gap: 6px;
     }
 
     &__badge {
         font-size: 11px;
-        padding: 1px 6px;
+        padding: 2px 7px;
         border-radius: 4px;
         background: var(--b3-theme-primary);
-        color: var(--b3-theme-on-primary);
+        color: #ffffff;
         font-weight: 500;
     }
 
@@ -95,6 +154,7 @@
     }
 }
 
+/* 横向紧凑操作按钮栏 */
 .siyuan-linker-action-row {
     display: flex;
     align-items: center;
@@ -103,14 +163,16 @@
     width: 100%;
 }
 
+/* 配对状态看板卡片 */
 .siyuan-linker-status-card {
     background: var(--b3-theme-surface);
     border: 1px solid var(--b3-border-color);
     border-radius: 6px;
     padding: 12px;
     width: 100%;
+    box-sizing: border-box;
     font-size: 12px;
     line-height: 1.6;
     color: var(--b3-theme-on-surface);
+    white-space: pre-line;
 }
-
