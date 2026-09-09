@@ -242,6 +242,9 @@ export class SettingUtils {
 
     addItem(item: ISettingUtilsItem) {
         this.settings.set(item.key, item);
+        if (item.omitFromSettingUI) {
+            return;
+        }
         const IsCustom = item.type === 'custom';
         let error = IsCustom && (item.createElement === undefined || item.getEleVal === undefined || item.setEleVal === undefined);
         if (error) {

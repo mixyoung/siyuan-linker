@@ -40,4 +40,5 @@ interface ISettingUtilsItem extends ISettingItem {
     createElement?: (currentVal: any) => HTMLElement;
     getEleVal?: (ele: HTMLElement) => any;
     setEleVal?: (ele: HTMLElement, val: any) => void;
+    omitFromSettingUI?: boolean;
 }

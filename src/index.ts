@@ -25,7 +25,7 @@ import {
 } from "./mirror-storage";
 import { collectDescendantIds } from "./sync-adapters";
 import { MirrorOperationError, type MirrorPairStatus } from "./mirror-types";
-import { migrateTransferModeSettings, type PersistedTransferMode } from "./settings-migration";
+import { migrateTransferModeSettings } from "./settings-migration";
 
 const STORAGE_NAME = "menu-config";
 const REMOTE_NOTES_DOCK_TYPE = "siyuan-linker-remote-notes";
@@ -133,10 +133,14 @@ export default class SiYuanLinker extends Plugin {
     private setupSettings() {
         this.settingUtils = new SettingUtils({ plugin: this, name: STORAGE_NAME });
 
-        this.addTextSetting("sysecret", this.i18n.targetTokenSecret1, this.i18n.targetTokenSecret1Description, "1");
-        this.addTextSetting("syurl", this.i18n.targetUrl1, this.i18n.targetUrl1Description, "1");
-        this.addTextSetting("sysecret2", this.i18n.targetTokenSecret2, this.i18n.targetTokenSecret2Description, "2");
-        this.addTextSetting("syurl2", this.i18n.targetUrl2, this.i18n.targetUrl2Description, "2");
+        // 注册持久化数据项（不单独在思源界面生成孤立行，由下方横向卡片统一渲染与绑定）
+        this.addTextSetting("sysecret", this.i18n.targetTokenSecret1, this.i18n.targetTokenSecret1Description, "1", true);
+        this.addTextSetting("syurl", this.i18n.targetUrl1, this.i18n.targetUrl1Description, "1", true);
+        this.addTextSetting("sysecret2", this.i18n.targetTokenSecret2, this.i18n.targetTokenSecret2Description, "2", true);
+        this.addTextSetting("syurl2", this.i18n.targetUrl2, this.i18n.targetUrl2Description, "2", true);
+
+        // ======================== 板块一：目标服务配置 ========================
+        this.addSectionHeader("secTargetServers", this.i18n.sectionTargetServers, this.i18n.sectionTargetServersDesc);
 
         this.settingUtils.addItem({
             key: "Select",
@@ -150,24 +154,7 @@ export default class SiYuanLinker extends Plugin {
                     const selected = String(await this.settingUtils.takeAndSave("Select"));
                     this.selectedTarget = selected === "2" ? "2" : "1";
                     this.syncTargetConnection();
-                },
-            },
-        });
-
-        this.settingUtils.addItem({
-            key: "transferMode",
-            value: "independent-copy" satisfies PersistedTransferMode,
-            type: "select",
-            title: this.i18n.transferMode,
-            description: this.i18n.transferModeDescription,
-            options: {
-                "exact-id-mirror": this.i18n.exactIdMirror,
-                "independent-copy": this.i18n.independentCopy,
-            },
-            action: {
-                callback: async () => {
-                    await this.settingUtils.takeAndSave("transferMode");
-                    this.emitPairingStatus();
+                    this.updateTargetServerCardsHighlight();
                 },
             },
         });
@@ -180,88 +167,270 @@ export default class SiYuanLinker extends Plugin {
             description: this.i18n.validateConnectionDescription,
             button: { label: this.i18n.validate, callback: () => void this.validateConnection() },
         });
+
         this.settingUtils.addItem({
-            key: "pairActiveTarget",
+            key: "targetServersGrid",
             value: "",
-            type: "button",
-            title: this.i18n.pairActiveTarget,
-            description: this.i18n.pairActiveTargetDescription,
-            button: { label: this.i18n.pair, callback: () => void this.pairActiveTarget() },
+            type: "hint",
+            title: "",
+            description: "",
+            direction: "column",
+            createElement: () => this.createTargetServersGridElement(),
         });
+
+        // ======================== 板块二：数据同步与传输 ========================
+        this.addSectionHeader("secSyncTransfer", this.i18n.sectionSyncTransfer, this.i18n.sectionSyncTransferDesc);
+
         this.settingUtils.addItem({
-            key: "adoptFullClone",
+            key: "pairingSection",
             value: "",
-            type: "button",
-            title: this.i18n.adoptFullClone,
-            description: this.i18n.adoptFullCloneDescription,
-            button: { label: this.i18n.adopt, callback: () => void this.adoptActiveTargetFullClone() },
+            type: "hint",
+            title: "",
+            description: "",
+            direction: "column",
+            createElement: () => this.createPairingControlElement(),
         });
+
         this.settingUtils.addItem({
-            key: "verifyPairing",
+            key: "syncSubgroupsGrid",
             value: "",
-            type: "button",
-            title: this.i18n.verifyPairing,
-            description: this.i18n.verifyPairingDescription,
-            button: { label: this.i18n.verify, callback: () => void this.verifyActiveTargetPairing() },
+            type: "hint",
+            title: "",
+            description: "",
+            direction: "column",
+            createElement: () => this.createSyncSubgroupsElement(),
         });
+
         this.settingUtils.addItem({
-            key: "resetPairing",
+            key: "fullMigrationCard",
             value: "",
-            type: "button",
-            title: this.i18n.resetPairing,
-            description: this.i18n.resetPairingDescription,
-            button: { label: this.i18n.reset, callback: () => void this.resetActiveTargetPairing() },
+            type: "hint",
+            title: "",
+            description: "",
+            direction: "column",
+            createElement: () => this.createFullMigrationCardElement(),
         });
-        this.settingUtils.addItem({
-            key: "createAndMapNotebook",
-            value: "",
-            type: "button",
-            title: this.i18n.createAndMapNotebook,
-            description: this.i18n.notebookMapping,
-            button: { label: this.i18n.mapNotebook, callback: () => void this.promptCreateAndMapNotebook() },
-        });
-        this.settingUtils.addItem({
-            key: "pairingStatus",
-            value: "",
-            type: "button",
-            title: this.i18n.pairingStatus,
-            description: this.i18n.pairingStatusDescription,
-            createElement: () => {
-                const element = document.createElement("div");
-                element.className = "b3-label fn__flex-center";
-                element.style.whiteSpace = "pre-line";
-                this.updatePairingStatusElement(element);
-                return element;
-            },
-        });
-        this.settingUtils.addItem({
-            key: "push",
-            value: "",
-            type: "button",
-            title: this.i18n.transferAll,
-            description: this.i18n.transferAllDescription,
-            button: { label: this.i18n.transfer, callback: () => void this.runPush() },
-        });
-        this.settingUtils.addItem({
-            key: "pull",
-            value: "",
-            type: "button",
-            title: this.i18n.pullAll,
-            description: this.i18n.pullAllDescription,
-            button: { label: this.i18n.pull, callback: () => void this.runPull() },
-        });
+
+        // ======================== 板块三：通用与安全设置 ========================
+        this.addSectionHeader("secGeneral", this.i18n.sectionGeneral, this.i18n.sectionGeneralDesc);
 
         this.addCheckboxSetting("allowInsecureHttp", false, this.i18n.allowInsecureHttp, this.i18n.allowInsecureHttpDescription);
         this.addCheckboxSetting("islog", true, this.i18n.enableLogging, this.i18n.enableLoggingDescription);
     }
 
-    private addTextSetting(key: string, title: string, description: string, targetNumber: TargetNumber) {
+    private addSectionHeader(key: string, title: string, description: string) {
+        this.settingUtils.addItem({
+            key,
+            value: "",
+            type: "hint",
+            title: "",
+            description: "",
+            direction: "column",
+            createElement: () => {
+                const header = document.createElement("div");
+                header.className = "siyuan-linker-section-header";
+                header.innerHTML = `
+                    <div class="siyuan-linker-section-header__title">${escapeHtml(title)}</div>
+                    <div class="siyuan-linker-section-header__desc">${escapeHtml(description)}</div>
+                `;
+                return header;
+            },
+        });
+    }
+
+    private createTargetServersGridElement(): HTMLElement {
+        const container = document.createElement("div");
+        container.className = "siyuan-linker-grid-2col";
+        container.id = "siyuan-linker-target-cards";
+
+        const url1 = String(this.settingUtils.get("syurl") ?? "");
+        const secret1 = String(this.settingUtils.get("sysecret") ?? "");
+        const url2 = String(this.settingUtils.get("syurl2") ?? "");
+        const secret2 = String(this.settingUtils.get("sysecret2") ?? "");
+
+        container.innerHTML = `
+            <div class="siyuan-linker-card" id="siyuan-linker-card-target-1">
+                <div class="siyuan-linker-card__header">
+                    <span class="siyuan-linker-card__title">${escapeHtml(this.i18n.target1)}</span>
+                    <span class="siyuan-linker-card__badge" style="display: none;">${escapeHtml(this.i18n.targetServerActiveBadge)}</span>
+                </div>
+                <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetUrl1)}</div>
+                <input class="b3-text-field fn__block" id="siyuan-linker-input-url1" type="text" value="${escapeHtml(url1)}" placeholder="https://..." />
+                <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetTokenSecret1)}</div>
+                <input class="b3-text-field fn__block" id="siyuan-linker-input-sec1" type="text" value="${escapeHtml(secret1)}" placeholder="Secret name" />
+            </div>
+            <div class="siyuan-linker-card" id="siyuan-linker-card-target-2">
+                <div class="siyuan-linker-card__header">
+                    <span class="siyuan-linker-card__title">${escapeHtml(this.i18n.target2)}</span>
+                    <span class="siyuan-linker-card__badge" style="display: none;">${escapeHtml(this.i18n.targetServerActiveBadge)}</span>
+                </div>
+                <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetUrl2)}</div>
+                <input class="b3-text-field fn__block" id="siyuan-linker-input-url2" type="text" value="${escapeHtml(url2)}" placeholder="https://..." />
+                <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetTokenSecret2)}</div>
+                <input class="b3-text-field fn__block" id="siyuan-linker-input-sec2" type="text" value="${escapeHtml(secret2)}" placeholder="Secret name" />
+            </div>
+        `;
+
+        const bindInput = (id: string, key: string, targetNum: TargetNumber) => {
+            const el = container.querySelector<HTMLInputElement>(`#${id}`);
+            if (el) {
+                el.addEventListener("change", async () => {
+                    await this.settingUtils.setAndSave(key, el.value.trim());
+                    if (this.selectedTarget === targetNum) this.syncTargetConnection();
+                });
+            }
+        };
+
+        bindInput("siyuan-linker-input-url1", "syurl", "1");
+        bindInput("siyuan-linker-input-sec1", "sysecret", "1");
+        bindInput("siyuan-linker-input-url2", "syurl2", "2");
+        bindInput("siyuan-linker-input-sec2", "sysecret2", "2");
+
+        this.updateTargetServerCardsHighlight(container);
+        return container;
+    }
+
+    private updateTargetServerCardsHighlight(container?: HTMLElement) {
+        const root = container ?? document.getElementById("siyuan-linker-target-cards");
+        if (!root) return;
+        const card1 = root.querySelector<HTMLElement>("#siyuan-linker-card-target-1");
+        const card2 = root.querySelector<HTMLElement>("#siyuan-linker-card-target-2");
+        const badge1 = card1?.querySelector<HTMLElement>(".siyuan-linker-card__badge");
+        const badge2 = card2?.querySelector<HTMLElement>(".siyuan-linker-card__badge");
+
+        const isTarget1 = this.selectedTarget === "1";
+        if (card1 && badge1) {
+            card1.classList.toggle("siyuan-linker-card--active", isTarget1);
+            badge1.style.display = isTarget1 ? "inline-block" : "none";
+        }
+        if (card2 && badge2) {
+            card2.classList.toggle("siyuan-linker-card--active", !isTarget1);
+            badge2.style.display = !isTarget1 ? "inline-block" : "none";
+        }
+    }
+
+    private createPairingControlElement(): HTMLElement {
+        const container = document.createElement("div");
+        container.style.width = "100%";
+        container.style.display = "flex";
+        container.style.flexDirection = "column";
+        container.style.gap = "8px";
+
+        const statusElement = document.createElement("div");
+        statusElement.className = "siyuan-linker-status-card";
+        statusElement.style.whiteSpace = "pre-line";
+        this.updatePairingStatusElement(statusElement);
+        this.settingUtils.elements.set("pairingStatus", statusElement);
+        container.appendChild(statusElement);
+
+        const actionsRow = document.createElement("div");
+        actionsRow.className = "siyuan-linker-action-row";
+
+        const createButton = (key: string, label: string, callback: () => void, isPrimary = false) => {
+            const btn = document.createElement("button");
+            btn.className = isPrimary ? "b3-button b3-button--text" : "b3-button b3-button--outline";
+            btn.textContent = label;
+            btn.addEventListener("click", callback);
+            this.settingUtils.elements.set(key, btn);
+            actionsRow.appendChild(btn);
+            return btn;
+        };
+
+        createButton("pairActiveTarget", this.i18n.pairActiveTarget, () => void this.pairActiveTarget(), true);
+        createButton("verifyPairing", this.i18n.verifyPairing, () => void this.verifyActiveTargetPairing());
+        createButton("resetPairing", this.i18n.resetPairing, () => void this.resetActiveTargetPairing());
+
+        container.appendChild(actionsRow);
+        return container;
+    }
+
+    private createSyncSubgroupsElement(): HTMLElement {
+        const container = document.createElement("div");
+        container.className = "siyuan-linker-grid-2col";
+
+        // 左块：持续镜像与映射
+        const mirrorCard = document.createElement("div");
+        mirrorCard.className = "siyuan-linker-card";
+        mirrorCard.innerHTML = `
+            <div class="siyuan-linker-card__title">${escapeHtml(this.i18n.mirrorSubgroupTitle)}</div>
+            <div class="b3-label__text" style="font-size: 12px; opacity: 0.8; margin-bottom: 8px;">
+                ${escapeHtml(this.i18n.mirrorSubgroupDesc)}
+            </div>
+        `;
+        const mapBtn = document.createElement("button");
+        mapBtn.className = "b3-button b3-button--outline fn__block";
+        mapBtn.textContent = this.i18n.createAndMapNotebook;
+        mapBtn.addEventListener("click", () => void this.promptCreateAndMapNotebook());
+        this.settingUtils.elements.set("createAndMapNotebook", mapBtn);
+        mirrorCard.appendChild(mapBtn);
+        container.appendChild(mirrorCard);
+
+        // 右块：笔记传输模式偏好
+        const modeCard = document.createElement("div");
+        modeCard.className = "siyuan-linker-card";
+        modeCard.innerHTML = `
+            <div class="siyuan-linker-card__title">${escapeHtml(this.i18n.modeSubgroupTitle)}</div>
+            <div class="b3-label__text" style="font-size: 12px; opacity: 0.8; margin-bottom: 8px;">
+                ${escapeHtml(this.i18n.modeSubgroupDesc)}
+            </div>
+        `;
+        const select = document.createElement("select");
+        select.className = "b3-select fn__block";
+        select.innerHTML = `
+            <option value="exact-id-mirror">${escapeHtml(this.i18n.exactIdMirror)}</option>
+            <option value="independent-copy">${escapeHtml(this.i18n.independentCopy)}</option>
+        `;
+        select.value = String(this.settingUtils.get("transferMode") ?? "independent-copy");
+        select.addEventListener("change", async () => {
+            await this.settingUtils.setAndSave("transferMode", select.value);
+            this.emitPairingStatus();
+        });
+        this.settingUtils.elements.set("transferMode", select);
+        modeCard.appendChild(select);
+        container.appendChild(modeCard);
+
+        return container;
+    }
+
+    private createFullMigrationCardElement(): HTMLElement {
+        const card = document.createElement("div");
+        card.className = "siyuan-linker-card";
+        card.style.width = "100%";
+        card.innerHTML = `
+            <div class="siyuan-linker-card__title" style="color: var(--b3-theme-error, #d83b01);">${escapeHtml(this.i18n.fullMigrationTitle)}</div>
+            <div class="b3-label__text" style="font-size: 12px; opacity: 0.8; margin-bottom: 8px;">
+                ${escapeHtml(this.i18n.fullMigrationDesc)}
+            </div>
+            <div class="siyuan-linker-action-row" id="siyuan-linker-migration-actions"></div>
+        `;
+
+        const row = card.querySelector<HTMLElement>("#siyuan-linker-migration-actions")!;
+
+        const addBtn = (key: string, label: string, callback: () => void, isDanger = false) => {
+            const btn = document.createElement("button");
+            btn.className = isDanger ? "b3-button b3-button--error" : "b3-button b3-button--outline";
+            btn.textContent = label;
+            btn.addEventListener("click", callback);
+            this.settingUtils.elements.set(key, btn);
+            row.appendChild(btn);
+            return btn;
+        };
+
+        addBtn("push", this.i18n.transferAll, () => void this.runPush());
+        addBtn("pull", this.i18n.pullAll, () => void this.runPull());
+        addBtn("adoptFullClone", this.i18n.adoptFullClone, () => void this.adoptActiveTargetFullClone(), true);
+
+        return card;
+    }
+
+    private addTextSetting(key: string, title: string, description: string, targetNumber: TargetNumber, omitFromSettingUI = false) {
         this.settingUtils.addItem({
             key,
             value: "",
             type: "textinput",
             title,
             description,
+            omitFromSettingUI,
             action: {
                 callback: async () => {
                     await this.settingUtils.takeAndSave(key);

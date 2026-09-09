@@ -158,5 +158,19 @@
   "fullTransferConfirmTitle": "全量传输强确认",
   "fullPullConfirmTitle": "全量拉取强确认",
   "document": "文档",
-  "notebookMappedSucceeded": "已在目标端创建并映射笔记本：${name} (${id})"
+  "notebookMappedSucceeded": "已在目标端创建并映射笔记本：${name} (${id})",
+  "sectionTargetServers": "目标服务配置",
+  "sectionTargetServersDesc": "配置并测试需要互联互传的远程思源实例",
+  "sectionSyncTransfer": "数据同步与传输",
+  "sectionSyncTransferDesc": "管理工作空间配对、双向持续镜像、笔记本映射及整库迁移工具",
+  "sectionGeneral": "通用与安全设置",
+  "sectionGeneralDesc": "网络通信与调试控制",
+  "targetServerActiveBadge": "当前激活",
+  "pairingActions": "配对操作",
+  "fullMigrationTitle": "全量数据迁移（一次性操作）",
+  "fullMigrationDesc": "使用原生全工作空间归档导入导出，用于整库初次迁移或完整克隆初始化，可能影响大量数据，需谨慎操作",
+  "mirrorSubgroupTitle": "持续镜像与映射",
+  "mirrorSubgroupDesc": "保持相同笔记本结构与内部文档/块 ID，支持跨 ID 笔记本双端映射",
+  "modeSubgroupTitle": "笔记传输模式偏好",
+  "modeSubgroupDesc": "控制顶栏与侧栏笔记传输的默认方式"
 }

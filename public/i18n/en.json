@@ -158,5 +158,19 @@
   "fullTransferConfirmTitle": "Confirm full transfer",
   "fullPullConfirmTitle": "Confirm full pull",
   "document": "Document",
-  "notebookMappedSucceeded": "Created and mapped notebook on target: ${name} (${id})"
+  "notebookMappedSucceeded": "Created and mapped notebook on target: ${name} (${id})",
+  "sectionTargetServers": "Target Servers",
+  "sectionTargetServersDesc": "Configure and test remote SiYuan instances for transfer and sync",
+  "sectionSyncTransfer": "Sync & Transfer",
+  "sectionSyncTransferDesc": "Manage workspace pairing, continuous mirror, notebook mappings, and migration tools",
+  "sectionGeneral": "General & Security",
+  "sectionGeneralDesc": "Network communication and diagnostic options",
+  "targetServerActiveBadge": "Active",
+  "pairingActions": "Pairing Actions",
+  "fullMigrationTitle": "Full Workspace Migration (One-time)",
+  "fullMigrationDesc": "Native all-data archive import and export for initial migration or full-clone setups. Use with caution.",
+  "mirrorSubgroupTitle": "Continuous Mirror & Mapping",
+  "mirrorSubgroupDesc": "Preserve identical paths and IDs across workspaces with bilateral notebook mappings",
+  "modeSubgroupTitle": "Note Transfer Mode",
+  "modeSubgroupDesc": "Default behavior for toolbar and dock note transfers"
 }
