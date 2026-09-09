@@ -2,7 +2,7 @@
   "name": "siyuan-linker",
   "author": "steve",
   "url": "https://github.com/mixyoung/siyuan-linker",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "minAppVersion": "3.8.2",
   "backends": [
     "all"
