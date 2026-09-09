@@ -143,5 +143,20 @@
   "documentSync": "文档精确镜像",
   "bidirectionalSync": "双向同步",
   "pushDirection": "单向推送",
-  "pullDirection": "单向拉取"
+  "pullDirection": "单向拉取",
+  "effectiveSource": "有效源端",
+  "effectiveDestination": "有效目标端",
+  "localWorkspace": "本地工作空间",
+  "fullWorkspaceData": "全工作空间数据",
+  "irreversibleConsequences": "不可逆后果",
+  "selectLocalNotebook": "选择本地笔记本",
+  "targetNotebookName": "目标端笔记本名称",
+  "targetNotebookNameRequired": "目标端笔记本名称不能为空",
+  "confirmAction": "确定",
+  "cancelAction": "取消",
+  "firstSyncConflictTitle": "首次同步冲突确认",
+  "fullTransferConfirmTitle": "全量传输强确认",
+  "fullPullConfirmTitle": "全量拉取强确认",
+  "document": "文档",
+  "notebookMappedSucceeded": "已在目标端创建并映射笔记本：${name} (${id})"
 }

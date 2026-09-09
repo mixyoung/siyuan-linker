@@ -1,6 +1,7 @@
 import { createApp, type App as VueApp } from "vue";
 import {
     confirm as confirmDialog,
+    Dialog,
     Menu,
     Plugin,
     showMessage,
@@ -407,8 +408,17 @@ export default class SiYuanLinker extends Plugin {
     }
 
     public async adoptActiveTargetFullClone(): Promise<void> {
-        if (this.pairingActionInProgress || !window.confirm(this.i18n.adoptFullCloneConfirm)) return;
-        const typed = window.prompt(this.i18n.adoptFullClonePrompt);
+        if (this.pairingActionInProgress) return;
+        const items = [
+            `${this.i18n.effectiveDestination}: ${this.getSelectedTargetLabel()}`,
+            this.i18n.adoptFullCloneConfirm,
+        ];
+        const typed = await this.promptPhraseDialog(
+            this.i18n.adoptFullClone,
+            items,
+            this.i18n.adoptFullClonePrompt,
+        );
+        if (typed === null) return;
         if (typed !== ADOPT_FULL_CLONE_CONFIRMATION) {
             showMessage(this.i18n.adoptFullCloneConfirmationMismatch, 8000, "error");
             return;
@@ -432,9 +442,9 @@ export default class SiYuanLinker extends Plugin {
         const current = await this.refreshPairingStatus();
         let force = false;
         if (current.pending) {
-            if (!window.confirm(this.i18n.resetPairingPendingConfirm)) return;
+            if (!await this.confirmActionWithList(this.i18n.resetPairing, [this.i18n.resetPairingPendingConfirm])) return;
             force = true;
-        } else if (!window.confirm(this.i18n.resetPairingConfirm)) {
+        } else if (!await this.confirmActionWithList(this.i18n.resetPairing, [this.i18n.resetPairingConfirm])) {
             return;
         }
         this.setPairingActionsBusy(true);
@@ -534,9 +544,17 @@ export default class SiYuanLinker extends Plugin {
                 this.i18n.independentCopyWarningNewIds,
                 this.i18n.independentCopyWarningExpandedScope,
             ];
+        return this.confirmActionWithList(this.i18n.selectiveTransferConfirmTitle, items);
+    }
+
+    private confirmActionWithList(
+        title: string,
+        items: string[],
+        question: string = this.i18n.selectiveTransferContinue,
+    ): Promise<boolean> {
         return awaitConfirmation((confirm, cancel) => confirmDialog(
-            escapeHtml(this.i18n.selectiveTransferConfirmTitle),
-            buildConfirmationList(items, this.i18n.selectiveTransferContinue),
+            escapeHtml(title),
+            buildConfirmationList(items, question),
             confirm,
             cancel,
         ));
@@ -553,6 +571,155 @@ export default class SiYuanLinker extends Plugin {
         this.currentDocId = activeTitle?.dataset.nodeId ?? this.currentDocId;
     }
 
+    private promptPhraseDialog(
+        title: string,
+        items: string[],
+        prompt: string,
+    ): Promise<string | null> {
+        return new Promise((resolve) => {
+            let settled = false;
+            const listHtml = items.length ? `<ul class="siyuan-linker-confirm-list">${items.map((i) => `<li>${escapeHtml(i)}</li>`).join("")}</ul>` : "";
+            const content = `
+<div class="b3-dialog__content" style="padding: 16px;">
+    ${listHtml}
+    <p class="siyuan-linker-confirm-question" style="margin-top: 12px;">${escapeHtml(prompt)}</p>
+    <div style="margin-top: 12px;">
+        <input class="b3-text-field fn__block siyuan-linker-dialog-input" type="text" autofocus />
+    </div>
+</div>
+<div class="b3-dialog__action">
+    <button class="b3-button b3-button--cancel siyuan-linker-dialog-cancel">${escapeHtml(this.i18n.cancelAction)}</button>
+    <div class="fn__space"></div>
+    <button class="b3-button b3-button--text siyuan-linker-dialog-confirm">${escapeHtml(this.i18n.confirmAction)}</button>
+</div>`;
+
+            const dialog = new Dialog({
+                title: escapeHtml(title),
+                content,
+                width: "520px",
+                destroyCallback: () => {
+                    if (!settled) {
+                        settled = true;
+                        resolve(null);
+                    }
+                },
+            });
+
+            const element = dialog.element;
+            const input = element.querySelector<HTMLInputElement>(".siyuan-linker-dialog-input");
+            const cancelBtn = element.querySelector<HTMLButtonElement>(".siyuan-linker-dialog-cancel");
+            const confirmBtn = element.querySelector<HTMLButtonElement>(".siyuan-linker-dialog-confirm");
+
+            cancelBtn?.addEventListener("click", () => {
+                if (!settled) {
+                    settled = true;
+                    dialog.destroy();
+                    resolve(null);
+                }
+            });
+
+            const doConfirm = () => {
+                if (!settled) {
+                    settled = true;
+                    const value = input?.value?.trim() ?? "";
+                    dialog.destroy();
+                    resolve(value);
+                }
+            };
+
+            confirmBtn?.addEventListener("click", doConfirm);
+            input?.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    doConfirm();
+                }
+            });
+            setTimeout(() => input?.focus(), 50);
+        });
+    }
+
+    private promptNotebookMappingDialog(
+        localNotebooks: Array<{ id: string; name: string }>,
+    ): Promise<{ localNotebookId: string; destinationNotebookName: string } | null> {
+        return new Promise((resolve) => {
+            let settled = false;
+            const optionsHtml = localNotebooks
+                .map((nb, idx) => `<option value="${escapeHtml(nb.id)}"${idx === 0 ? " selected" : ""}>${escapeHtml(nb.name)} (${escapeHtml(nb.id)})</option>`)
+                .join("");
+            const initialName = localNotebooks[0]?.name ?? "";
+
+            const content = `
+<div class="b3-dialog__content" style="padding: 16px;">
+    <div class="b3-label" style="margin-bottom: 6px;">${escapeHtml(this.i18n.selectLocalNotebook)}</div>
+    <select class="b3-select fn__block siyuan-linker-nb-select">${optionsHtml}</select>
+    <div style="height: 14px;"></div>
+    <div class="b3-label" style="margin-bottom: 6px;">${escapeHtml(this.i18n.targetNotebookName)}</div>
+    <input class="b3-text-field fn__block siyuan-linker-nb-name" type="text" value="${escapeHtml(initialName)}" />
+</div>
+<div class="b3-dialog__action">
+    <button class="b3-button b3-button--cancel siyuan-linker-dialog-cancel">${escapeHtml(this.i18n.cancelAction)}</button>
+    <div class="fn__space"></div>
+    <button class="b3-button b3-button--text siyuan-linker-dialog-confirm">${escapeHtml(this.i18n.confirmAction)}</button>
+</div>`;
+
+            const dialog = new Dialog({
+                title: escapeHtml(this.i18n.createAndMapNotebook),
+                content,
+                width: "520px",
+                destroyCallback: () => {
+                    if (!settled) {
+                        settled = true;
+                        resolve(null);
+                    }
+                },
+            });
+
+            const element = dialog.element;
+            const select = element.querySelector<HTMLSelectElement>(".siyuan-linker-nb-select");
+            const nameInput = element.querySelector<HTMLInputElement>(".siyuan-linker-nb-name");
+            const cancelBtn = element.querySelector<HTMLButtonElement>(".siyuan-linker-dialog-cancel");
+            const confirmBtn = element.querySelector<HTMLButtonElement>(".siyuan-linker-dialog-confirm");
+
+            select?.addEventListener("change", () => {
+                const found = localNotebooks.find((nb) => nb.id === select.value);
+                if (found && nameInput) {
+                    nameInput.value = found.name;
+                }
+            });
+
+            cancelBtn?.addEventListener("click", () => {
+                if (!settled) {
+                    settled = true;
+                    dialog.destroy();
+                    resolve(null);
+                }
+            });
+
+            const doConfirm = () => {
+                if (!settled) {
+                    const localNotebookId = select?.value ?? "";
+                    const destinationNotebookName = nameInput?.value?.trim() ?? "";
+                    if (!localNotebookId || !destinationNotebookName) {
+                        showMessage(this.i18n.targetNotebookNameRequired, 6000, "error");
+                        return;
+                    }
+                    settled = true;
+                    dialog.destroy();
+                    resolve({ localNotebookId, destinationNotebookName });
+                }
+            };
+
+            confirmBtn?.addEventListener("click", doConfirm);
+            nameInput?.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    doConfirm();
+                }
+            });
+            setTimeout(() => nameInput?.focus(), 50);
+        });
+    }
+
     public async promptCreateAndMapNotebook(): Promise<void> {
         if (this.pairingActionInProgress) return;
         try {
@@ -561,24 +728,26 @@ export default class SiYuanLinker extends Plugin {
                 showMessage(this.i18n.noNotebooks, 6000, "error");
                 return;
             }
-            const nbNames = localNotebooks.map((nb, i) => `${i + 1}. ${nb.name} (${nb.id})`).join("\n");
-            const choice = window.prompt(`请选择本地笔记本编号 (1-${localNotebooks.length}):\n${nbNames}`);
-            if (!choice) return;
-            const index = parseInt(choice, 10) - 1;
-            if (isNaN(index) || index < 0 || index >= localNotebooks.length) {
-                showMessage("无效的笔记本编号", 6000, "error");
-                return;
-            }
-            const selectedNb = localNotebooks[index];
-            const targetName = window.prompt(`目标端笔记本名称:`, selectedNb.name);
-            if (!targetName) return;
+            const mappingInput = await this.promptNotebookMappingDialog(localNotebooks);
+            if (!mappingInput) return;
 
             const target = this.getTargetConnection();
             this.setPairingActionsBusy(true);
             showMessage(this.i18n.validating, -1, "info");
-            const created = await createAndMapNotebook(selectedNb.id, targetName, undefined, target);
+            const created = await createAndMapNotebook(
+                mappingInput.localNotebookId,
+                mappingInput.destinationNotebookName,
+                undefined,
+                target,
+            );
             await this.refreshPairingStatus();
-            showMessage(`已在目标端创建并映射笔记本: ${created.name} (${created.id})`, 6000, "info");
+            showMessage(
+                this.i18n.notebookMappedSucceeded
+                    .replace("${name}", created.name)
+                    .replace("${id}", created.id),
+                6000,
+                "info",
+            );
         } catch (error) {
             await this.refreshPairingStatus();
             this.reportError(this.i18n.pairingFailed, error);
@@ -639,7 +808,18 @@ export default class SiYuanLinker extends Plugin {
             completed(await attempt());
         } catch (error) {
             const conflicts = error instanceof MirrorOperationError ? error.details.firstSyncConflicts ?? [] : [];
-            if (!conflicts.length || !window.confirm(this.i18n.firstSyncConflictConfirm)) {
+            if (!conflicts.length) {
+                throw error;
+            }
+            const items = [
+                this.i18n.firstSyncConflictConfirm,
+                ...conflicts.map((id) => `${this.i18n.document}: ${id}`),
+            ];
+            const confirmed = await this.confirmActionWithList(
+                this.i18n.firstSyncConflictTitle,
+                items,
+            );
+            if (!confirmed) {
                 throw error;
             }
             showMessage(running, -1, "info");
@@ -695,7 +875,13 @@ export default class SiYuanLinker extends Plugin {
     }
 
     private async runPush() {
-        if (!window.confirm(this.i18n.fullTransferWarning)) return;
+        const items = [
+            `${this.i18n.effectiveSource}: ${this.i18n.localWorkspace}`,
+            `${this.i18n.effectiveDestination}: ${this.getSelectedTargetLabel()}`,
+            `${this.i18n.syncScope}: ${this.i18n.fullWorkspaceData}`,
+            `${this.i18n.irreversibleConsequences}: ${this.i18n.fullTransferWarning}`,
+        ];
+        if (!await this.confirmActionWithList(this.i18n.fullTransferConfirmTitle, items)) return;
         try {
             const target = this.getTargetConnection();
             showMessage(this.i18n.transferring, -1, "info", this.i18n.transferAll);
@@ -709,7 +895,13 @@ export default class SiYuanLinker extends Plugin {
     }
 
     private async runPull() {
-        if (!window.confirm(this.i18n.fullPullWarning)) return;
+        const items = [
+            `${this.i18n.effectiveSource}: ${this.getSelectedTargetLabel()}`,
+            `${this.i18n.effectiveDestination}: ${this.i18n.localWorkspace}`,
+            `${this.i18n.syncScope}: ${this.i18n.fullWorkspaceData}`,
+            `${this.i18n.irreversibleConsequences}: ${this.i18n.fullPullWarning}`,
+        ];
+        if (!await this.confirmActionWithList(this.i18n.fullPullConfirmTitle, items)) return;
         try {
             const target = this.getTargetConnection();
             showMessage(this.i18n.pulling, -1, "info", this.i18n.pullAll);

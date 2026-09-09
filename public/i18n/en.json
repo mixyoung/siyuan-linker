@@ -143,5 +143,20 @@
   "documentSync": "Document exact mirror",
   "bidirectionalSync": "Bidirectional sync",
   "pushDirection": "Push",
-  "pullDirection": "Pull"
+  "pullDirection": "Pull",
+  "effectiveSource": "Effective source",
+  "effectiveDestination": "Effective destination",
+  "localWorkspace": "Local workspace",
+  "fullWorkspaceData": "Full workspace data",
+  "irreversibleConsequences": "Irreversible consequences",
+  "selectLocalNotebook": "Select local notebook",
+  "targetNotebookName": "Target notebook name",
+  "targetNotebookNameRequired": "Target notebook name cannot be empty",
+  "confirmAction": "Confirm",
+  "cancelAction": "Cancel",
+  "firstSyncConflictTitle": "Confirm first-sync conflict",
+  "fullTransferConfirmTitle": "Confirm full transfer",
+  "fullPullConfirmTitle": "Confirm full pull",
+  "document": "Document",
+  "notebookMappedSucceeded": "Created and mapped notebook on target: ${name} (${id})"
 }
