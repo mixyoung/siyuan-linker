@@ -33,9 +33,9 @@ Exact-ID mirror currently:
 
 **First transfer without a baseline is conservative:** if a destination document with the same ID already exists, it is accepted only when its complete fingerprint already matches the source. Otherwise the transfer is treated as a conflict. A shared baseline is recorded only after both ends verify the same final state. When the plugin reports this first-sync conflict, it offers an explicit, confirmed overwrite of the affected documents with the source version (adopt-source) to rebuild the baseline; with a baseline recorded, destination-side edits still abort as conflicts.
 
-### Independent copy
+### One-time copy (generate new IDs)
 
-Independent copy uses SiYuan's native document export/import archive. It is intended for unrelated workspaces and does **not** require pairing. SiYuan creates new document, block, and attribute-view IDs during import.
+One-time copy uses SiYuan's native document export/import archive. It is intended for unrelated workspaces and does **not** require pairing. SiYuan creates new document, block, and attribute-view IDs during import.
 
 The native archive can be broader than the visible selection. Depending on source data and export settings, it can include referenced documents, child documents, related attribute views, PDF annotations, assets, and other supporting data. The confirmation dialog states this expanded scope before import.
 
@@ -72,11 +72,11 @@ Pairing records only notebook IDs that exist on both ends at pairing time. If re
 2. In the local SiYuan that runs this plugin, open **Settings → Secrets and variables** and create a Secret such as `SIYUAN_LINKER_TARGET_1_TOKEN` whose value is the remote token.
 3. Enter the target URL and Secret name in plugin settings. Do not enter the token itself.
 4. Select the active target and choose **Validate**.
-5. Choose **Independent copy** for unrelated workspaces, or follow the explicit pairing workflow for **Exact-ID mirror**.
+5. Choose **One-time copy (generate new IDs)** for unrelated workspaces, or follow the explicit pairing workflow for **Exact-ID mirror**.
 
 Older plugin releases stored tokens in plaintext plugin data. The plugin warns when it finds those legacy fields and removes each old field after the corresponding configured Secret validates successfully.
 
-The former persisted `preserveIds` checkbox is migrated to the transfer-mode selector. `true` becomes Exact-ID mirror and `false` becomes Independent copy; the old key is intentionally removed while unrelated legacy settings are retained.
+The former persisted `preserveIds` checkbox is migrated to the transfer-mode selector. `true` becomes Exact-ID mirror and `false` becomes One-time copy; the old key is intentionally removed while unrelated legacy settings are retained.
 
 ## Usage
 
@@ -91,7 +91,7 @@ The former persisted `preserveIds` checkbox is migrated to the transfer-mode sel
 - Assets created before a failed document write are intentionally retained as harmless orphans rather than deleted based only on matching bytes. The error reports residual asset paths for manual inspection and cleanup; verified document rollback can still clear pending lineage.
 - A pending lineage record is a safety signal, not an instruction to retry blindly. Reset refuses pending records. Inspect both workspaces and backups and complete recovery or verified rollback first.
 - Exact mirror does not merge conflicts, rename or move documents, remap notebooks, support encrypted notebooks, or support attribute-view-bound documents.
-- Independent copy and full-data import inherit the scope and behavior of SiYuan's native archive APIs.
+- One-time copy and full-data import inherit the scope and behavior of SiYuan's native archive APIs.
 - Back up both workspaces and confirm source, destination, active target, transfer mode, and pairing status before every write.
 
 ## Local installation
