@@ -120,6 +120,12 @@ pnpm build
 
 项目地址：<https://github.com/mixyoung/siyuan-linker>
 
+## 社区与联系
+
+可扫码添加好友，或加入 SuperDev AI 社区微信群、飞书群。微信群二维码有时效限制；如已失效，请先添加好友。
+
+![添加好友或加入 SuperDev AI 社区](asset/superdev-community-qr-codes.png)
+
 ## License
 
 [MIT](LICENSE)

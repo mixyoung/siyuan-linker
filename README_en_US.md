@@ -118,6 +118,12 @@ Build output is written to `dist/`; the release archive is `package.zip` at the 
 
 Project repository: <https://github.com/mixyoung/siyuan-linker>
 
+## Community and contact
+
+Scan the codes below to add the maintainer or join the SuperDev AI community on WeChat or Feishu. If the temporary WeChat group code has expired, add the maintainer first.
+
+![Add the maintainer or join the SuperDev AI community](asset/superdev-community-qr-codes.png)
+
 ## License
 
 [MIT](LICENSE)
