@@ -242,6 +242,15 @@ export class SettingUtils {
 
     addItem(item: ISettingUtilsItem) {
         this.settings.set(item.key, item);
+        // Defaults must be assigned before the omit early-return so headless
+        // (omitFromSettingUI) items still expose safe getEleVal/setEleVal to
+        // load(), set(), and the dialog confirm/destroy callbacks.
+        if (item.getEleVal === undefined) {
+            item.getEleVal = createDefaultGetter(item.type);
+        }
+        if (item.setEleVal === undefined) {
+            item.setEleVal = createDefaultSetter(item.type);
+        }
         if (item.omitFromSettingUI) {
             return;
         }
@@ -250,13 +259,6 @@ export class SettingUtils {
         if (error) {
             console.error('The custom setting item must have createElement, getEleVal and setEleVal methods');
             return;
-        }
-
-        if (item.getEleVal === undefined) {
-            item.getEleVal = createDefaultGetter(item.type);
-        }
-        if (item.setEleVal === undefined) {
-            item.setEleVal = createDefaultSetter(item.type);
         }
 
         if (item.createElement === undefined) {
@@ -389,6 +391,9 @@ export class SettingUtils {
         let item = this.settings.get(key);
         if (item.type === 'button') return;
         let element = this.elements.get(key) as any;
+        // Headless items (omitFromSettingUI or custom sections) have no bound
+        // element; their value is maintained directly through set()/save().
+        if (!element) return;
         item.value = item.getEleVal(element);
     }
 
@@ -396,6 +401,7 @@ export class SettingUtils {
         let item = this.settings.get(key);
         if (item.type === 'button') return;
         let element = this.elements.get(key) as any;
+        if (!element) return;
         item.setEleVal(element, item.value);
     }
 }

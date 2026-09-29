@@ -14,8 +14,7 @@
 }
 
 /* 彻底清除思源为设置项默认添加的底部横线与内边距 */
-label.b3-label:has(.siyuan-linker-section),
-label.b3-label:has(.siyuan-linker-section-block) {
+label.b3-label:has(.siyuan-linker-section) {
     border-bottom: none !important;
     padding: 0 !important;
     margin-bottom: 16px !important;

@@ -16,6 +16,11 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": resolve(__dirname, "src"),
+            // Unit tests cannot resolve the type-only "siyuan" package; alias
+            // it to a local stub only when running under Vitest.
+            ...(process.env.VITEST
+                ? { siyuan: resolve(__dirname, "tests/stubs/siyuan-stub.ts") }
+                : {}),
         },
     },
     plugins: [
