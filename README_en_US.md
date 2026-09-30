@@ -23,11 +23,11 @@ Before any exact transfer, the plugin verifies lineage on both ends. It then per
 
 Exact-ID mirror currently:
 
-- requires exactly matching SiYuan versions and matching notebook IDs on both ends;
+- requires exactly matching SiYuan versions; the destination notebook is chosen from the notebook IDs recorded at pairing time, or from an explicit mapping created afterwards (see Pairing workflow);
 - supports selected documents and any missing ancestor documents needed to preserve the path;
 - keeps already-existing, unselected ancestors unchanged;
 - rejects encrypted notebooks and documents bound to attribute views;
-- does not support document renames, document moves, or notebook remapping;
+- does not support document renames or document moves; notebooks are never remapped automatically and require an explicit **Create and map notebook on target** mapping;
 - aborts rather than merges when the destination has independently changed;
 - reloads the destination file tree after a verified write when the kernel permits it.
 
@@ -64,7 +64,7 @@ The files contain no API token. Do not copy, hand-edit, or selectively restore t
 
 A destination made by a full workspace clone initially has the same workspace identity as the source. Ordinary pairing deliberately refuses this condition. If, and only if, the selected target is a confirmed full clone, use the separate **Adopt full-clone destination** action, accept the destructive warning, and type the exact confirmation phrase. The action archives the destination's copied lineage, rotates only the destination identity, clears its active copied lineage, and does not pair automatically. Review the archive path, then pair explicitly.
 
-Pairing records only notebook IDs that exist on both ends at pairing time. If required notebook IDs do not exist on both ends, prepare the workspace/notebooks first rather than expecting exact mirror to remap them.
+Pairing records only the notebook IDs present on both ends at pairing time. When notebook IDs differ between the two ends, use **Create and map notebook on target** in plugin settings after pairing to establish an explicit mapping; exact mirror then keeps the same document-tree relative path and document IDs inside the mapped destination notebook. The plugin never remaps notebooks automatically.
 
 ## Configuration
 
@@ -90,7 +90,7 @@ The former persisted `preserveIds` checkbox is migrated to the transfer-mode sel
 - Best-effort rollback verifies operation-owned content before restoring or deleting it. Ambiguous concurrent changes are left in place and reported rather than destructively overwritten.
 - Assets created before a failed document write are intentionally retained as harmless orphans rather than deleted based only on matching bytes. The error reports residual asset paths for manual inspection and cleanup; verified document rollback can still clear pending lineage.
 - A pending lineage record is a safety signal, not an instruction to retry blindly. Reset refuses pending records. Inspect both workspaces and backups and complete recovery or verified rollback first.
-- Exact mirror does not merge conflicts, rename or move documents, remap notebooks, support encrypted notebooks, or support attribute-view-bound documents.
+- Exact mirror does not merge conflicts, rename or move documents, support encrypted notebooks, or support attribute-view-bound documents; syncing across different notebook IDs requires an explicit mapping first.
 - One-time copy and full-data import inherit the scope and behavior of SiYuan's native archive APIs.
 - Back up both workspaces and confirm source, destination, active target, transfer mode, and pairing status before every write.
 
