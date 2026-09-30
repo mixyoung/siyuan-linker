@@ -172,5 +172,7 @@
   "mirrorSubgroupTitle": "Continuous Mirror & Mapping",
   "mirrorSubgroupDesc": "Preserve identical paths and IDs across workspaces with bilateral notebook mappings",
   "modeSubgroupTitle": "Note Transfer Mode",
-  "modeSubgroupDesc": "Default behavior for toolbar and dock note transfers"
+  "modeSubgroupDesc": "Default behavior for toolbar and dock note transfers",
+  "secretNamePlaceholder": "Secret name (e.g. SIYUAN_LINKER_TARGET_1_TOKEN), never the token itself",
+  "descendantsEnumerateFailed": "Failed to enumerate sub-documents (SQL query failed or the index is not ready); the \"current note and all sub-notes\" transfer was cancelled. Retry later and check the kernel log if it keeps failing. The transfer will NOT silently fall back to the current note only."
 }

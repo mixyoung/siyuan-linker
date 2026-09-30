@@ -175,6 +175,41 @@ describe("native exact mirror orchestration", () => {
         expect(api.writeFile.mock.calls.some(([path]) => String(path).endsWith(".sy"))).toBe(false);
     });
 
+    it("pushes into an explicitly mapped destination notebook with a different ID", async () => {
+        const srcBox = "20240922091315-yy1vlf4";
+        const dstBox = "20260907123000-abcdefg";
+        storage.inspectMirrorPair.mockResolvedValue({
+            valid: true, reasons: [], pending: false, allowedNotebookIds: [srcBox],
+            sourceIdentity: { workspaceId: "source", schemaVersion: 1, createdAt: "now" },
+            destinationIdentity: { workspaceId: "destination", schemaVersion: 1, createdAt: "now" },
+            sourceRecord: {
+                pairId: "pair", baselines: {}, notebookIds: [srcBox],
+                notebookMappings: [{ localNotebookId: srcBox, remoteNotebookId: dstBox }],
+            },
+            destinationRecord: {
+                pairId: "pair", baselines: {}, notebookIds: [dstBox],
+                notebookMappings: [{ localNotebookId: dstBox, remoteNotebookId: srcBox }],
+            },
+        });
+        api.listNotebooks.mockResolvedValue([{ id: dstBox, name: "Mirror", closed: false }]);
+        api.getDocumentLocation.mockImplementation(async (_blockId: string, target?: typeof remote) =>
+            target ? { notebookId: dstBox, path: `data/${dstBox}/${id}.sy` } : { notebookId: srcBox, path: `data/${srcBox}/${id}.sy` });
+
+        await expect(mirrorDocumentsExact([id], undefined, remote)).resolves.toMatchObject({ count: 1, warnings: [] });
+
+        // Creation, not a "destination notebook missing" abort, and it must
+        // target the MAPPED notebook with the remapped physical path.
+        expect(api.createDocWithMd).toHaveBeenCalledWith({
+            notebookId: dstBox, id, parentId: "", path: "/Doc", markdown: "",
+        }, remote);
+        // Final verification compares logical identity: the committed
+        // destination baseline carries the destination notebook while the
+        // logical path stays notebook-independent.
+        expect(storage.commitMirrorBaselines).toHaveBeenCalledWith({
+            [id]: expect.objectContaining({ notebookId: dstBox, path: `data/${dstBox}/${id}.sy`, logicalPath: `${id}.sy`, hpath: "/Doc" }),
+        }, expect.objectContaining({ pairId: "pair" }), undefined, remote);
+    });
+
     it("accepts the kernel dropping an empty link mark before identical visible URL text", async () => {
         const url = "https://kdocs.cn/l/cfEeu8mstMWf";
         const sourceDom = `<div data-node-id="${childId}" data-type="NodeParagraph"><div contenteditable="true"><span data-type="a" data-href="${url}"></span>${url}</div></div>`;

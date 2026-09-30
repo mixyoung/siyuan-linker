@@ -127,6 +127,16 @@ function sameRenderedDom(left: string, right: string): boolean {
     return left === right || normalizeDom(left) === normalizeDom(right);
 }
 
+// Logical path drops the endpoint-specific notebook container so documents
+// compare across mapped notebooks (design §2.6): data/<any>/<relative>.sy
+function logicalDocumentPath(path: string): string {
+    return path.split("/").slice(2).join("/");
+}
+
+function remapNotebookPrefix(path: string, targetNotebookId: string): string {
+    return `data/${targetNotebookId}/${logicalDocumentPath(path)}`;
+}
+
 async function buildBaseline(
     documentId: string,
     notebookId: string,
@@ -138,10 +148,11 @@ async function buildBaseline(
     assets: Array<{ path: string; sha256: string }>,
 ): Promise<MirrorDocumentBaseline> {
     // `updated` timestamps inside block IALs are kernel-managed per-instance
-    // metadata; converged documents legitimately differ on them, so they are
-    // excluded from the cross-instance identity hash.
+    // metadata, and `box` names the endpoint-local notebook container; both
+    // legitimately differ between converged instances (and across a mapped
+    // notebook pair), so they are excluded from the cross-instance hashes.
     const normalizedRows = [...identityRows]
-        .map((row) => ({ ...row, ial: normalizeIal(row.ial ?? "") }))
+        .map((row) => ({ ...row, box: "", ial: normalizeIal(row.ial ?? "") }))
         .sort((left, right) => left.id.localeCompare(right.id));
     const normalizedAttrs = comparableAttrs(attrs);
     const normalizedAssets = assets.map(({ path: assetPath, sha256: assetSha256 }) => ({ path: assetPath, sha256: assetSha256 }))
@@ -152,12 +163,15 @@ async function buildBaseline(
     const [domSha256, identityRowsSha256, attrsSha256, assetsSha256] = await Promise.all([
         sha256(normalizeDom(dom)), sha256(JSON.stringify(normalizedRows)), sha256(JSON.stringify(normalizedAttrs)), sha256(JSON.stringify(normalizedAssets)),
     ]);
+    const logicalPath = logicalDocumentPath(path);
+    // The fingerprint binds the logical (notebook-independent) path so the
+    // same content under a mapped notebook hashes identically on both ends.
     const fingerprint = await sha256(JSON.stringify({
-        hashVersion: BASELINE_HASH_VERSION, notebookId, path, hpath, domSha256, identityRowsSha256, attrsSha256, assetsSha256,
+        hashVersion: BASELINE_HASH_VERSION, logicalPath, hpath, domSha256, identityRowsSha256, attrsSha256, assetsSha256,
     }));
     return {
         hashVersion: BASELINE_HASH_VERSION,
-        documentId, notebookId, path, hpath, domSha256, identityRowsSha256, attrsSha256, assetsSha256, fingerprint,
+        documentId, notebookId, path, logicalPath, hpath, domSha256, identityRowsSha256, attrsSha256, assetsSha256, fingerprint,
         blockIds, assets: normalizedAssets,
     };
 }
@@ -277,11 +291,20 @@ function firstDomDiff(normalizedSource: string, normalizedDestination: string): 
         + ` destination=${JSON.stringify(normalizedDestination.slice(from, index + 160))}`;
 }
 
+// Baseline fields that name the endpoint-local physical location; they differ
+// legitimately between a mapped source/destination notebook pair and are
+// asserted separately through the logical path.
+const PHYSICAL_BASELINE_KEYS = new Set(["notebookId", "path", "fingerprint"]);
+
 function assertCommonSnapshot(source: MirrorDocumentSnapshot, destination: MirrorDocumentSnapshot): void {
     const differing: string[] = [];
     for (const key of Object.keys(source.baseline) as Array<keyof MirrorDocumentBaseline>) {
+        if (PHYSICAL_BASELINE_KEYS.has(key)) continue;
         if (JSON.stringify(source.baseline[key]) !== JSON.stringify(destination.baseline[key])) differing.push(String(key));
     }
+    const sourceLogical = source.baseline.logicalPath ?? logicalDocumentPath(source.baseline.path);
+    const destinationLogical = destination.baseline.logicalPath ?? logicalDocumentPath(destination.baseline.path);
+    if (sourceLogical !== destinationLogical) differing.push("logicalPath");
     if (differing.length
         || !sameStrings(source.blockIds, destination.blockIds)
         || !sameAssets(source.baseline.assets, destination.baseline.assets)) {
@@ -473,6 +496,13 @@ async function mirrorDocumentsExactUnlocked(
             throw new Error(`Exact mirror requires a valid matching lineage: ${status.reasons.join("; ")}`);
         }
         const allowedNotebooks = new Set(status.allowedNotebookIds);
+        // Explicit bilateral notebook mappings (design §10): a source notebook
+        // may be mirrored into a destination notebook with a different ID.
+        // Unmapped (same-ID) notebooks resolve to themselves.
+        const notebookMap = new Map<string, string>(
+            (status.sourceRecord.notebookMappings ?? []).map((mapping) => [mapping.localNotebookId, mapping.remoteNotebookId]),
+        );
+        const mapNotebook = (sourceNotebookId: string): string => notebookMap.get(sourceNotebookId) ?? sourceNotebookId;
         const destinationNotebooks = await listNotebooks(destination);
         const destinationNotebookMap = new Map(destinationNotebooks.map((notebook) => [notebook.id, notebook]));
         const required = new Map<string, { documentId: string; path: string; parentId: string; depth: number; selected: boolean }>();
@@ -486,10 +516,11 @@ async function mirrorDocumentsExactUnlocked(
         }
         const notebookIds = [...new Set([...required.values()].map(({ path }) => path.split("/")[1]))];
         for (const notebookId of notebookIds) {
-            const notebook = destinationNotebookMap.get(notebookId);
-            if (!notebook) throw new Error(`Exact mirror requires destination notebook ${notebookId} to exist`);
-            if (notebook.closed) await openNotebook(notebookId, destination);
-            if (await isEncryptedNotebook(notebookId, source) || await isEncryptedNotebook(notebookId, destination)) {
+            const mappedNotebookId = mapNotebook(notebookId);
+            const notebook = destinationNotebookMap.get(mappedNotebookId);
+            if (!notebook) throw new Error(`Exact mirror requires destination notebook ${mappedNotebookId}${mappedNotebookId !== notebookId ? ` (mapped from ${notebookId})` : ""} to exist`);
+            if (notebook.closed) await openNotebook(mappedNotebookId, destination);
+            if (await isEncryptedNotebook(notebookId, source) || await isEncryptedNotebook(mappedNotebookId, destination)) {
                 throw new Error("Exact mirror does not support encrypted notebooks");
             }
         }
@@ -507,12 +538,13 @@ async function mirrorDocumentsExactUnlocked(
         const existingIds = new Set<string>();
         for (const entry of required.values()) {
             const root = rowsById.get(entry.documentId);
-            const notebookId = entry.path.split("/")[1];
-            const apiPath = workspacePathToDocumentPath(entry.path);
+            const sourceNotebookId = entry.path.split("/")[1];
+            const mappedNotebookId = mapNotebook(sourceNotebookId);
+            const expectedDestinationPath = workspacePathToDocumentPath(remapNotebookPrefix(entry.path, mappedNotebookId));
             if (!root) missingIds.add(entry.documentId);
             else {
                 existingIds.add(entry.documentId);
-                if (root.root_id !== entry.documentId || root.box !== notebookId || root.path !== apiPath) {
+                if (root.root_id !== entry.documentId || root.box !== mappedNotebookId || root.path !== expectedDestinationPath) {
                     throw new Error(`Exact mirror path or notebook mismatch for ${entry.documentId}`);
                 }
                 const destinationHPath = await getHPathByID(entry.documentId, destination);
@@ -594,14 +626,15 @@ async function mirrorDocumentsExactUnlocked(
         }
         for (const entry of [...required.values()].filter(({ documentId }) => missingIds.has(documentId)).sort((left, right) => left.depth - right.depth)) {
             const snapshot = sourceSnapshots.get(entry.documentId)!;
+            const mappedNotebookId = mapNotebook(snapshot.notebookId);
             const intended: CreatedDocumentWrite = {
-                documentId: entry.documentId, notebookId: snapshot.notebookId, path: entry.path, depth: entry.depth,
+                documentId: entry.documentId, notebookId: mappedNotebookId, path: remapNotebookPrefix(entry.path, mappedNotebookId), depth: entry.depth,
                 expectedDom: snapshot.dom, expectedAttrs: snapshot.managedAttrs, createConfirmed: false, domApplied: false, attrsApplied: false,
             };
             createdWrites.push(intended);
             try {
                 await verifyPendingOwnership();
-                await createDocWithMd({ notebookId: snapshot.notebookId, id: entry.documentId, parentId: entry.parentId, path: snapshot.hpath, markdown: "" }, destination);
+                await createDocWithMd({ notebookId: mappedNotebookId, id: entry.documentId, parentId: entry.parentId, path: snapshot.hpath, markdown: "" }, destination);
                 intended.createConfirmed = true;
                 [intended.placeholderDom, intended.placeholderAttrs] = await Promise.all([
                     getBlockDOM(entry.documentId, destination),
@@ -670,6 +703,15 @@ async function mirrorDocumentsExactUnlocked(
                 const updated = updatedWrites.find((item) => item.before.documentId === entry.documentId);
                 return updated ? updated.before.baseline.domSha256 : undefined;
             });
+            // The logical fingerprint proves content convergence; the physical
+            // placement must still be asserted separately so a document that
+            // ended up in the wrong (even mapped) container fails verification
+            // instead of silently committing a moved document.
+            const expectedNotebookId = mapNotebook(sourceSnapshot.notebookId);
+            const expectedPath = remapNotebookPrefix(sourceSnapshot.path, expectedNotebookId);
+            if (destinationSnapshot.notebookId !== expectedNotebookId || destinationSnapshot.path !== expectedPath) {
+                throw new Error(`Exact mirror final verification: ${entry.documentId} resides at ${destinationSnapshot.notebookId}:${destinationSnapshot.path} but was expected at ${expectedNotebookId}:${expectedPath}`);
+            }
             assertCommonSnapshot(sourceSnapshot, destinationSnapshot);
             baselines[entry.documentId] = destinationSnapshot.baseline;
         }

@@ -94,9 +94,11 @@ function parseBaseline(value: unknown, key: string): MirrorDocumentBaseline {
         }
         return { path: String((asset as Record<string, unknown>).path), sha256: String((asset as Record<string, unknown>).sha256) };
     });
+    // Optional since v5; absent on baselines written by older versions.
+    const logicalPath = typeof item.logicalPath === "string" ? item.logicalPath : undefined;
     return {
         hashVersion,
-        documentId: String(item.documentId), notebookId: String(item.notebookId), path: String(item.path), hpath: String(item.hpath),
+        documentId: String(item.documentId), notebookId: String(item.notebookId), path: String(item.path), logicalPath, hpath: String(item.hpath),
         domSha256: String(item.domSha256), identityRowsSha256: String(item.identityRowsSha256), attrsSha256: String(item.attrsSha256),
         assetsSha256: String(item.assetsSha256), fingerprint: String(item.fingerprint), blockIds: [...item.blockIds] as string[], assets,
     };
@@ -523,20 +525,25 @@ export async function createAndMapNotebook(
     source?: TargetConnection,
     destination?: TargetConnection,
 ): Promise<{ id: string; name: string }> {
-    const status = await inspectMirrorPair(source, destination);
-    if (!status.valid || !status.sourceRecord) {
-        throw new Error("Cannot create and map notebook: pairing is not valid");
-    }
-    const existing = resolveNotebookMapping(status.sourceRecord, sourceNotebookId);
-    if (existing && existing !== sourceNotebookId) {
-        throw new Error(`Source notebook ${sourceNotebookId} is already mapped to ${existing}`);
-    }
-    const notebook = await createNotebook(destinationNotebookName, destination);
-    await addNotebookMapping(source, destination, {
-        localNotebookId: sourceNotebookId,
-        remoteNotebookId: notebook.id,
+    // Creating the notebook then mutating both lineage files must be atomic
+    // with transfers on the same endpoint pair; otherwise a concurrent exact
+    // mirror could rewrite the lineages while the mapping is half-written.
+    return withMirrorOperationLock(source, destination, async () => {
+        const status = await inspectMirrorPair(source, destination);
+        if (!status.valid || !status.sourceRecord) {
+            throw new Error("Cannot create and map notebook: pairing is not valid");
+        }
+        const existing = resolveNotebookMapping(status.sourceRecord, sourceNotebookId);
+        if (existing && existing !== sourceNotebookId) {
+            throw new Error(`Source notebook ${sourceNotebookId} is already mapped to ${existing}`);
+        }
+        const notebook = await createNotebook(destinationNotebookName, destination);
+        await addNotebookMapping(source, destination, {
+            localNotebookId: sourceNotebookId,
+            remoteNotebookId: notebook.id,
+        });
+        return notebook;
     });
-    return notebook;
 }
 
 export async function recordDeletionTombstones(

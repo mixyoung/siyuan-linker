@@ -139,6 +139,10 @@ export async function transferDocuments(
         : transferDocumentsSafely(docIds, source, destination);
 }
 
+// SiYuan API tokens are long separator-free alphanumeric strings; Secret
+// names (e.g. SIYUAN_LINKER_TARGET_1_TOKEN) contain separators and never match.
+const TOKEN_LIKE_PATTERN = /^[a-zA-Z0-9]{24,}$/;
+
 export async function sourceHasLegacyTokens(source?: TargetConnection): Promise<boolean> {
     let content: string;
     try {
@@ -150,7 +154,12 @@ export async function sourceHasLegacyTokens(source?: TargetConnection): Promise<
     }
     try {
         const data = JSON.parse(content) as Record<string, unknown>;
-        return [data.sykey, data.sykey2].some((value) => typeof value === "string" && value.trim() !== "");
+        const legacyFields = [data.sykey, data.sykey2].some((value) => typeof value === "string" && value.trim() !== "");
+        // sysecret/sysecret2 must hold Secret NAMES; a token-like value there
+        // means a plaintext token would leak into the exported workspace archive.
+        const plaintextInSecretFields = [data.sysecret, data.sysecret2]
+            .some((value) => typeof value === "string" && TOKEN_LIKE_PATTERN.test(value.trim()));
+        return legacyFields || plaintextInSecretFields;
     } catch {
         throw new Error("Full transfer blocked: the source plugin settings file is not valid JSON");
     }

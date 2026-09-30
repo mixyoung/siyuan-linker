@@ -30,6 +30,7 @@ vi.mock("../src/mirror-service", () => mirror);
 
 import {
     assertCompatible,
+    sourceHasLegacyTokens,
     transferAllData,
     transferDocumentsPreservingIds,
     transferDocumentsSafely,
@@ -147,5 +148,18 @@ describe("full transfer", () => {
 
         await expect(transferAllData(undefined, remote)).rejects.toThrow("migrate legacy plaintext API tokens");
         expect(api.exportAllData).not.toHaveBeenCalled();
+    });
+
+    it("blocks exporting when a Secret-name field holds a token-like plaintext value", async () => {
+        api.readTextFile.mockResolvedValue(JSON.stringify({ sysecret: "a".repeat(24), sysecret2: "" }));
+
+        await expect(transferAllData(undefined, remote)).rejects.toThrow("migrate legacy plaintext API tokens");
+        expect(api.exportAllData).not.toHaveBeenCalled();
+    });
+
+    it("keeps ordinary Secret names exportable despite their length", async () => {
+        api.readTextFile.mockResolvedValue(JSON.stringify({ sysecret: "SIYUAN_LINKER_TARGET_1_TOKEN", sysecret2: "remote2" }));
+
+        await expect(sourceHasLegacyTokens(undefined)).resolves.toBe(false);
     });
 });

@@ -172,5 +172,7 @@
   "mirrorSubgroupTitle": "持续镜像与映射",
   "mirrorSubgroupDesc": "保持相同笔记本结构与内部文档/块 ID，支持跨 ID 笔记本双端映射",
   "modeSubgroupTitle": "笔记传输模式偏好",
-  "modeSubgroupDesc": "控制顶栏与侧栏笔记传输的默认方式"
+  "modeSubgroupDesc": "控制顶栏与侧栏笔记传输的默认方式",
+  "secretNamePlaceholder": "密钥名称（如 SIYUAN_LINKER_TARGET_1_TOKEN），不要填 Token 本身",
+  "descendantsEnumerateFailed": "无法枚举子文档（SQL 查询失败或索引未就绪），已取消本次“当前笔记及全部子笔记”传输。请稍后重试；仍失败时请检查内核日志。不会退化为仅同步当前文档。"
 }

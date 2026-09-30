@@ -12,7 +12,7 @@ import {
 import App from "./app.vue";
 import "@/index.scss";
 import { awaitConfirmation, buildConfirmationList, escapeHtml } from "./confirmation-content";
-import { getDocumentLocation, getSystemVersion, listNotebooks, readonlySql, validateTargetUrl, type TargetConnection } from "./siyuan-api";
+import { assertNotebookId, getDocumentLocation, getSystemVersion, listNotebooks, readonlySql, validateTargetUrl, type TargetConnection } from "./siyuan-api";
 import { transferAllData, transferDocuments, type TransferMode } from "./transfer-service";
 import { SettingUtils } from "./libs/setting-utils";
 import {
@@ -263,7 +263,7 @@ export default class SiYuanLinker extends Plugin {
                     <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetUrl1)}</div>
                     <input class="b3-text-field fn__block" id="siyuan-linker-input-url1" type="text" value="${escapeHtml(url1)}" placeholder="https://ip:port" />
                     <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetTokenSecret1)}</div>
-                    <input class="b3-text-field fn__block" id="siyuan-linker-input-sec1" type="text" value="${escapeHtml(secret1)}" placeholder="Secret 名称或直接输入 API Token" />
+                    <input class="b3-text-field fn__block" id="siyuan-linker-input-sec1" type="text" value="${escapeHtml(secret1)}" placeholder="${escapeHtml(this.i18n.secretNamePlaceholder)}" />
                 </div>
                 <div class="siyuan-linker-card" id="siyuan-linker-card-target-2">
                     <div class="siyuan-linker-card__header">
@@ -273,7 +273,7 @@ export default class SiYuanLinker extends Plugin {
                     <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetUrl2)}</div>
                     <input class="b3-text-field fn__block" id="siyuan-linker-input-url2" type="text" value="${escapeHtml(url2)}" placeholder="https://ip:port" />
                     <div class="siyuan-linker-card__field-label">${escapeHtml(this.i18n.targetTokenSecret2)}</div>
-                    <input class="b3-text-field fn__block" id="siyuan-linker-input-sec2" type="text" value="${escapeHtml(secret2)}" placeholder="Secret 名称或直接输入 API Token" />
+                    <input class="b3-text-field fn__block" id="siyuan-linker-input-sec2" type="text" value="${escapeHtml(secret2)}" placeholder="${escapeHtml(this.i18n.secretNamePlaceholder)}" />
                 </div>
             </div>
         `;
@@ -554,15 +554,9 @@ export default class SiYuanLinker extends Plugin {
     }
 
     private resolveToken(targetNumber: TargetNumber): string {
-        const secretVal = this.readConfiguredSecret(targetNumber);
-        if (secretVal) return secretVal;
-
-        // Fallback: If user entered the raw API token directly in the field instead of a Secret name
-        const suffix = targetNumber === "1" ? "" : "2";
-        const rawSetting = String(this.settingUtils.get(`sysecret${suffix}`) ?? "").trim();
-        if (rawSetting) return rawSetting;
-
-        return this.legacyTokens[targetNumber] || "";
+        // Tokens live only in SiYuan Secrets; the sysecret* fields hold the
+        // Secret NAME and must never be sent as credentials themselves.
+        return this.readConfiguredSecret(targetNumber) || this.legacyTokens[targetNumber] || "";
     }
 
     private syncTargetConnection() {
@@ -645,7 +639,9 @@ export default class SiYuanLinker extends Plugin {
 
     private setPairingActionsBusy(busy: boolean) {
         this.pairingActionInProgress = busy;
-        for (const key of ["pairActiveTarget", "adoptFullClone", "verifyPairing", "resetPairing"]) {
+        // createAndMapNotebook mutates the shared lineage files, so it must be
+        // locked out while a pairing/mirror operation owns them.
+        for (const key of ["pairActiveTarget", "adoptFullClone", "verifyPairing", "resetPairing", "createAndMapNotebook"]) {
             if (busy) this.settingUtils.disable(key);
             else this.settingUtils.enable(key);
         }
@@ -1103,14 +1099,22 @@ export default class SiYuanLinker extends Plugin {
         try {
             let docIds = [this.currentDocId];
             if (includeDescendants) {
+                // Enumerating descendants can fail (SQL/index lag, permissions).
+                // Silently narrowing the batch to the current note would report
+                // success while skipping children, so surface the failure and
+                // abort the whole transfer instead.
+                let descendants: string[];
                 try {
                     const loc = await getDocumentLocation(this.currentDocId);
-                    const rows = await readonlySql(`SELECT id, parent_id, root_id, box, path, hpath FROM blocks WHERE type = 'd' AND box = '${loc.notebookId}'`);
-                    const descIds = collectDescendantIds(this.currentDocId, rows as unknown as Array<{ id: string; parent_id: string; root_id: string; box: string; path: string; hpath: string }>);
-                    docIds = [...new Set([this.currentDocId, ...descIds])];
+                    const notebookId = assertNotebookId(loc.notebookId);
+                    const rows = await readonlySql(`SELECT id, parent_id, root_id, box, path, hpath FROM blocks WHERE type = 'd' AND box = '${notebookId}'`);
+                    descendants = collectDescendantIds(this.currentDocId, rows as unknown as Array<{ id: string; parent_id: string; root_id: string; box: string; path: string; hpath: string }>);
                 } catch (error) {
-                    console.warn("Unable to enumerate descendants, falling back to current note", error);
+                    console.warn("Unable to enumerate descendants; aborting the tree transfer", error);
+                    showMessage(this.i18n.descendantsEnumerateFailed, -1, "error");
+                    return;
                 }
+                docIds = [...new Set([this.currentDocId, ...descendants])];
             }
             await this.runSelectiveTransfer(
                 docIds, undefined, this.getTargetConnection(), this.i18n.transferring,
