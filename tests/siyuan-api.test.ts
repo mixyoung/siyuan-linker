@@ -14,11 +14,13 @@ import {
     getBlockIdentityRows,
     getDocumentAssets,
     getHPathByID,
+    moveDocById,
     normalizeAssetPath,
     readonlySql,
     readApiResponse,
     removeDocById,
     removeWorkspaceFile,
+    renameDocById,
     requestHeaders,
     setBlockAttrs,
     updateBlockDOM,
@@ -173,6 +175,26 @@ describe("exact mirror API wrappers", () => {
         expect(fetchMock).toHaveBeenCalledWith("/api/filetree/createDocWithMd", expect.objectContaining({
             body: JSON.stringify({ notebook: "box-1", id, parentID: parentId, path: "/Parent/Child", markdown: "" }),
         }));
+    });
+
+    it("sends the kernel move and rename payloads for document relocation", async () => {
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify({ code: 0, data: null }), { status: 200 }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(moveDocById(id, parentId)).resolves.toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledWith("/api/filetree/moveDocsByID", expect.objectContaining({
+            body: JSON.stringify({ fromIDs: [id], toID: parentId }),
+        }));
+
+        await expect(renameDocById(id, "Renamed Title")).resolves.toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledWith("/api/filetree/renameDocByID", expect.objectContaining({
+            body: JSON.stringify({ id, title: "Renamed Title" }),
+        }));
+
+        fetchMock.mockClear();
+        await expect(moveDocById("bad", parentId)).rejects.toThrow("Invalid block ID");
+        await expect(renameDocById(id, "  ")).rejects.toThrow("title must be non-empty");
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it("validates exact IDs, source HPath, and safe deletion paths before requests", async () => {

@@ -3,8 +3,10 @@ import {
     downloadWorkspaceFileIfExists,
     getBlockAttrs,
     getBlockDOM,
+    moveDocById,
     reloadFileTree,
     removeDocById,
+    renameDocById,
     setBlockAttrs,
     updateBlockDOM,
     writeFile,
@@ -15,12 +17,14 @@ import {
     MirrorOperationError,
     type DeletionTombstone,
     type MirrorDocumentBaseline,
+    type MirrorDocumentSnapshot,
     type PendingMirrorOperation,
 } from "./mirror-types";
 import {
     buildAttributePatch,
     captureDocumentSnapshot,
     filterManagedRootAttrs,
+    normalizeDom,
     sha256,
 } from "./mirror-service";
 import {
@@ -30,14 +34,16 @@ import {
     inspectMirrorPair,
     persistPendingOperation,
     resolveNotebookMapping,
+    resolveReverseNotebookMapping,
     withMirrorOperationLock,
 } from "./mirror-storage";
 import type {
+    SyncAction,
     SyncPlan,
     SyncProfile,
 } from "./sync-types";
 import { createScopeAdapter } from "./sync-adapters";
-import { SyncPlanner } from "./sync-planner";
+import { SyncPlanner, hpathTitle } from "./sync-planner";
 
 export interface SyncExecutionResult {
     success: boolean;
@@ -48,14 +54,35 @@ export interface SyncExecutionResult {
 
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
+type DocumentWriteRecord = {
+    docId: string;
+    kind: "create" | "update" | "move";
+    endpoint: TargetConnection | undefined;
+    // update rollback
+    prevDom?: string;
+    prevAttrs?: BlockAttrs;
+    // move rollback (previous placement on the target end)
+    prevParentId?: string;
+    prevTitle?: string;
+    applied: boolean;
+};
+
 export class SyncExecutor {
     public async execute(
         plan: SyncPlan,
         source?: TargetConnection,
         destination?: TargetConnection,
     ): Promise<SyncExecutionResult> {
-        if (plan.conflicts.length > 0) {
-            const reasons = plan.conflicts.map((c) => `${c.objectId} (${c.classification}): ${c.reasons.join(", ")}`);
+        // Adapter contract: `source` is the LOCAL end and `destination` the
+        // REMOTE end. Each action declares the end it writes to via its
+        // direction (engine fix E2: bidirectional plans no longer collapse
+        // onto a single endpoint).
+        const endpointOf = (action: Pick<SyncAction, "direction">): TargetConnection | undefined =>
+            action.direction === "pull" ? source : destination;
+
+        const unresolved = plan.conflicts.filter((conflict) => !conflict.resolution);
+        if (unresolved.length > 0) {
+            const reasons = unresolved.map((c) => `${c.objectId} (${c.classification}): ${c.reasons.join(", ")}`);
             throw new MirrorOperationError(`Sync plan has unresolved conflicts:\n${reasons.join("\n")}`, {
                 state: "before-write",
                 cause: "unresolved-conflicts",
@@ -74,7 +101,6 @@ export class SyncExecutor {
         const pairId = status.sourceRecord.pairId;
         const operationId = crypto.randomUUID();
         const startedAt = new Date().toISOString();
-        const targetEndpoint = plan.profile.direction === "pull" ? source : destination;
 
         const allDocIds = [
             ...plan.creates.map((a) => a.objectId),
@@ -97,98 +123,163 @@ export class SyncExecutor {
         await persistPendingOperation(pending, source, destination);
         let pendingPersisted = true;
 
-        const createdDocs: string[] = [];
-        const updatedDocs: Array<{ docId: string; prevDom: string; prevAttrs: BlockAttrs }> = [];
+        const writeRecords: DocumentWriteRecord[] = [];
         const committedBaselines: Record<string, MirrorDocumentBaseline> = {};
         const tombstonesToRecord: DeletionTombstone[] = [];
         const tombstonesToClear: string[] = [];
         const warnings: string[] = [];
+        const touchedEndpoints = new Set<TargetConnection | undefined>();
+
+        const verifyPendingOwnership = async (): Promise<void> => {
+            if (!pendingPersisted) throw new Error("Mirror data mutation attempted without an owned bilateral pending operation");
+            await assertPendingOperationOwnership(pending, source, destination);
+        };
+
+        // The content side's notebook must be translated to the write end via
+        // the lineage mapping: push content is local (forward mapping), pull
+        // content is remote (inverse mapping).
+        const targetNotebookFor = (action: SyncAction, contentNotebookId: string): string =>
+            action.direction === "pull"
+                ? resolveReverseNotebookMapping(status.sourceRecord!, contentNotebookId)
+                : resolveNotebookMapping(status.sourceRecord!, contentNotebookId);
+
+        const logicalParentId = (logicalPath: string): string => {
+            const segments = logicalPath.split("/").filter(Boolean);
+            if (segments.length < 2) return "";
+            return segments[segments.length - 2].replace(/\.sy$/, "");
+        };
+
+        // Verifies the just-written document against the content snapshot:
+        // DOM/attribute/block-set equality (independent of baseline hash
+        // versions) plus physical placement on the mapped notebook — the same
+        // guarantees the exact-mirror final verification enforces.
+        const verifyWritten = async (action: SyncAction, content: MirrorDocumentSnapshot, endpoint: TargetConnection | undefined): Promise<MirrorDocumentBaseline> => {
+            const written = await captureDocumentSnapshot(action.objectId, endpoint);
+            if (normalizeDom(written.dom) !== normalizeDom(content.dom)) {
+                throw new Error(`Sync final verification: ${action.objectId} DOM diverged after the write`);
+            }
+            const sortedAttrs = (attrs: BlockAttrs) => JSON.stringify(Object.keys(attrs).sort().map((key) => [key, attrs[key]]));
+            if (sortedAttrs(written.managedAttrs) !== sortedAttrs(content.managedAttrs)) {
+                throw new Error(`Sync final verification: ${action.objectId} attributes diverged after the write`);
+            }
+            if (JSON.stringify([...written.blockIds].sort()) !== JSON.stringify([...content.blockIds].sort())) {
+                throw new Error(`Sync final verification: ${action.objectId} block ID set diverged after the write`);
+            }
+            const expectedNotebookId = targetNotebookFor(action, content.notebookId);
+            const expectedLogical = content.baseline.logicalPath ?? content.path.split("/").slice(2).join("/");
+            const writtenLogical = written.baseline.logicalPath ?? written.path.split("/").slice(2).join("/");
+            if (written.notebookId !== expectedNotebookId || writtenLogical !== expectedLogical) {
+                throw new Error(`Sync final verification: ${action.objectId} resides at ${written.notebookId}:${writtenLogical} but was expected at ${expectedNotebookId}:${expectedLogical}`);
+            }
+            return written.baseline;
+        };
 
         try {
-            // 1. Transfer assets for created and updated documents
-            const assetMap = new Map<string, Blob>();
+            // 1. Transfer assets for created and updated documents (per action endpoint).
+            const assetMap = new Map<string, { content: Blob; endpoints: Set<TargetConnection | undefined> }>();
             for (const action of [...plan.creates, ...plan.updates]) {
-                if (action.sourceSnapshot) {
-                    for (const asset of action.sourceSnapshot.assets) {
-                        assetMap.set(asset.path, asset.content);
+                if (!action.sourceSnapshot) continue;
+                for (const asset of action.sourceSnapshot.assets) {
+                    const entry = assetMap.get(asset.path) ?? { content: asset.content, endpoints: new Set<TargetConnection | undefined>() };
+                    entry.endpoints.add(endpointOf(action));
+                    assetMap.set(asset.path, entry);
+                }
+            }
+            for (const [assetPath, { content, endpoints }] of assetMap) {
+                for (const endpoint of endpoints) {
+                    await verifyPendingOwnership();
+                    const existing = await downloadWorkspaceFileIfExists(assetPath, endpoint);
+                    if (!existing || (await sha256(existing)) !== (await sha256(content))) {
+                        await writeFile(assetPath, content, endpoint);
                     }
                 }
             }
 
-            for (const [assetPath, content] of assetMap) {
-                await assertPendingOperationOwnership(pending, source, destination);
-                const existingAsset = await downloadWorkspaceFileIfExists(assetPath, targetEndpoint);
-                if (!existingAsset || (await sha256(existingAsset)) !== (await sha256(content))) {
-                    await writeFile(assetPath, content, targetEndpoint);
-                }
-            }
-
-            // 2. Create documents (parents first)
+            // 2. Create documents (parents first; planner orders by depth).
             for (const action of plan.creates) {
                 if (action.objectType !== "document" || !action.sourceSnapshot) continue;
-                await assertPendingOperationOwnership(pending, source, destination);
+                const endpoint = endpointOf(action);
+                await verifyPendingOwnership();
 
-                const srcSnap = action.sourceSnapshot;
-                const mappedNotebookId = resolveNotebookMapping(status.sourceRecord, srcSnap.notebookId) ?? srcSnap.notebookId;
-                const segments = srcSnap.path.split("/");
-                const parentId = segments.length > 3 ? segments[segments.length - 2].replace(/\.sy$/, "") : "";
+                const content = action.sourceSnapshot;
+                const mappedNotebookId = targetNotebookFor(action, content.notebookId);
+                const parentId = logicalParentId(content.baseline.logicalPath ?? content.path.split("/").slice(2).join("/"));
 
                 await createDocWithMd({
                     notebookId: mappedNotebookId,
                     id: action.objectId,
                     parentId,
-                    path: srcSnap.hpath,
+                    path: content.hpath,
                     markdown: "",
-                }, targetEndpoint);
-                createdDocs.push(action.objectId);
+                }, endpoint);
+                // createDocWithMd seeds an empty document; apply the content
+                // DOM and attributes in a second phase like the exact mirror.
+                await updateBlockDOM(action.objectId, content.dom, endpoint);
+                await setBlockAttrs(action.objectId, content.managedAttrs, endpoint);
+                const record: DocumentWriteRecord = { docId: action.objectId, kind: "create", endpoint, applied: true };
+                writeRecords.push(record);
+                touchedEndpoints.add(endpoint);
 
-                await updateBlockDOM(action.objectId, srcSnap.dom, targetEndpoint);
-                await setBlockAttrs(action.objectId, srcSnap.managedAttrs, targetEndpoint);
-
-                const newSnap = await captureDocumentSnapshot(action.objectId, targetEndpoint);
-                committedBaselines[action.objectId] = newSnap.baseline;
+                committedBaselines[action.objectId] = await verifyWritten(action, content, endpoint);
                 tombstonesToClear.push(action.objectId);
             }
 
-            // 3. Update documents
+            // 3. Update documents.
             for (const action of plan.updates) {
                 if (action.objectType !== "document" || !action.sourceSnapshot) continue;
-                await assertPendingOperationOwnership(pending, source, destination);
+                const endpoint = endpointOf(action);
+                await verifyPendingOwnership();
 
-                const srcSnap = action.sourceSnapshot;
-                const prevDom = action.destinationSnapshot?.dom ?? (await getBlockDOM(action.objectId, targetEndpoint).catch(() => ""));
-                const prevAttrs = action.destinationSnapshot?.managedAttrs ?? filterManagedRootAttrs(await getBlockAttrs(action.objectId, targetEndpoint).catch(() => ({})));
+                const content = action.sourceSnapshot;
+                const prevDom = action.destinationSnapshot?.dom ?? await getBlockDOM(action.objectId, endpoint);
+                const prevAttrs = action.destinationSnapshot?.managedAttrs
+                    ?? filterManagedRootAttrs(await getBlockAttrs(action.objectId, endpoint));
 
-                updatedDocs.push({ docId: action.objectId, prevDom, prevAttrs });
+                await updateBlockDOM(action.objectId, content.dom, endpoint);
+                const patch = buildAttributePatch(content.managedAttrs, prevAttrs);
+                await setBlockAttrs(action.objectId, patch, endpoint);
+                writeRecords.push({ docId: action.objectId, kind: "update", endpoint, prevDom, prevAttrs, applied: true });
+                touchedEndpoints.add(endpoint);
 
-                await updateBlockDOM(action.objectId, srcSnap.dom, targetEndpoint);
-                const patch = buildAttributePatch(srcSnap.managedAttrs, prevAttrs);
-                await setBlockAttrs(action.objectId, patch, targetEndpoint);
-
-                const newSnap = await captureDocumentSnapshot(action.objectId, targetEndpoint);
-                committedBaselines[action.objectId] = newSnap.baseline;
+                committedBaselines[action.objectId] = await verifyWritten(action, content, endpoint);
                 tombstonesToClear.push(action.objectId);
             }
 
-            // 4. Move documents
+            // 4. Move documents (real kernel move + rename; engine fix E3b).
             for (const action of plan.moves) {
-                if (action.objectType !== "document" || !action.sourceSnapshot) continue;
-                await assertPendingOperationOwnership(pending, source, destination);
+                if (action.objectType !== "document" || !action.sourceSnapshot || !action.destinationSnapshot) continue;
+                const endpoint = endpointOf(action);
+                await verifyPendingOwnership();
 
-                const srcSnap = action.sourceSnapshot;
-                await updateBlockDOM(action.objectId, srcSnap.dom, targetEndpoint);
-                await setBlockAttrs(action.objectId, srcSnap.managedAttrs, targetEndpoint);
+                const content = action.sourceSnapshot;
+                const target = action.destinationSnapshot;
+                const contentLogical = content.baseline.logicalPath ?? content.path.split("/").slice(2).join("/");
+                const targetLogical = target.baseline.logicalPath ?? target.path.split("/").slice(2).join("/");
+                const newParentId = logicalParentId(contentLogical);
+                const oldParentId = logicalParentId(targetLogical);
+                const newTitle = hpathTitle(content.hpath);
+                const oldTitle = hpathTitle(target.hpath);
 
-                const newSnap = await captureDocumentSnapshot(action.objectId, targetEndpoint);
-                committedBaselines[action.objectId] = newSnap.baseline;
+                if (newParentId && newParentId !== oldParentId) {
+                    await moveDocById(action.objectId, newParentId, endpoint);
+                }
+                if (newTitle && newTitle !== oldTitle) {
+                    await renameDocById(action.objectId, newTitle, endpoint);
+                }
+                writeRecords.push({ docId: action.objectId, kind: "move", endpoint, prevParentId: oldParentId, prevTitle: oldTitle, applied: true });
+                touchedEndpoints.add(endpoint);
+
+                committedBaselines[action.objectId] = await verifyWritten(action, content, endpoint);
             }
 
-            // 5. Delete documents (children first)
+            // 5. Delete documents (children first; planner orders by depth).
             for (const action of plan.deletes) {
                 if (action.objectType !== "document") continue;
-                await assertPendingOperationOwnership(pending, source, destination);
+                const endpoint = endpointOf(action);
+                await verifyPendingOwnership();
 
-                await removeDocById(action.objectId, targetEndpoint);
+                await removeDocById(action.objectId, endpoint);
+                touchedEndpoints.add(endpoint);
                 tombstonesToRecord.push({
                     objectType: "document",
                     objectId: action.objectId,
@@ -199,8 +290,8 @@ export class SyncExecutor {
                 });
             }
 
-            // 6. Advance common baselines and clear pending
-            await assertPendingOperationOwnership(pending, source, destination);
+            // 6. Advance common baselines and clear pending.
+            await verifyPendingOwnership();
             await commitSyncBaselines(committedBaselines, pending, source, destination, {
                 tombstonesToRecord,
                 tombstonesToClear,
@@ -208,11 +299,14 @@ export class SyncExecutor {
             });
             pendingPersisted = false;
 
-            // 7. Reload file tree
-            try {
-                await reloadFileTree(targetEndpoint);
-            } catch (error) {
-                warnings.push("File tree could not be reloaded automatically");
+            // 7. Reload file trees on every touched end.
+            for (const endpoint of touchedEndpoints) {
+                try {
+                    await reloadFileTree(endpoint);
+                } catch (error) {
+                    console.warn("Sync completed but the SiYuan file tree could not be reloaded", error);
+                    warnings.push("File tree could not be reloaded automatically");
+                }
             }
 
             return {
@@ -222,20 +316,28 @@ export class SyncExecutor {
                 warnings,
             };
         } catch (error) {
-            // Best-effort rollback
+            // Best-effort rollback on each write's own endpoint, reverse order.
             if (pendingPersisted) {
+                for (const record of [...writeRecords].reverse()) {
+                    try {
+                        if (record.kind === "update" && record.applied) {
+                            if (record.prevDom !== undefined) await updateBlockDOM(record.docId, record.prevDom, record.endpoint);
+                            if (record.prevAttrs !== undefined) await setBlockAttrs(record.docId, record.prevAttrs, record.endpoint);
+                        } else if (record.kind === "create" && record.applied) {
+                            await removeDocById(record.docId, record.endpoint);
+                        } else if (record.kind === "move" && record.applied) {
+                            if (record.prevParentId) await moveDocById(record.docId, record.prevParentId, record.endpoint);
+                            if (record.prevTitle) await renameDocById(record.docId, record.prevTitle, record.endpoint);
+                        }
+                    } catch (rollbackError) {
+                        console.warn(`Sync rollback step failed for ${record.docId}`, rollbackError);
+                    }
+                }
                 try {
-                    for (const { docId, prevDom, prevAttrs } of updatedDocs.reverse()) {
-                        await updateBlockDOM(docId, prevDom, targetEndpoint).catch(() => undefined);
-                        await setBlockAttrs(docId, prevAttrs, targetEndpoint).catch(() => undefined);
-                    }
-                    for (const docId of createdDocs.reverse()) {
-                        await removeDocById(docId, targetEndpoint).catch(() => undefined);
-                    }
                     await clearPendingAfterVerifiedRollback(pending, source, destination);
                     pendingPersisted = false;
                 } catch {
-                    // Left in pending state for inspection
+                    // Left pending for inspection.
                 }
             }
 
@@ -260,10 +362,10 @@ export async function runSyncProfile(
         const adapter = createScopeAdapter(profile, source, destination);
         await adapter.validateCapabilities();
 
-        const [sourceSnapshot, destinationSnapshot] = await Promise.all([
-            adapter.captureSource(),
-            adapter.captureDestination(),
-        ]);
+        // Sequential: the document-scope destination capture consumes the
+        // selection subtrees recorded during the source capture.
+        const sourceSnapshot = await adapter.captureSource();
+        const destinationSnapshot = await adapter.captureDestination();
 
         const status = await inspectMirrorPair(source, destination);
         const baselines = status.sourceRecord?.baselines ?? {};

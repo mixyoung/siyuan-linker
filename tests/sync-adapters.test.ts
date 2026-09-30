@@ -111,4 +111,52 @@ describe("DocumentScopeAdapter", () => {
         const item = snapshot.items.get(docId)!;
         expect(item.logicalPath).toBe(`${docId}.sy`);
     });
+
+    it("enumerates the destination independently, including destination-only descendants (E1)", async () => {
+        const rootId = "20260904120000-doc0001";
+        const localChild = "20260904120000-child01";
+        const destOnlyId = "20260904120000-chld002";
+        const remote = { url: "http://remote" };
+
+        api.readonlySql.mockImplementation(async (_stmt: string, target?: { url?: string }) => {
+            if (!target) return [];
+            return [
+                { id: rootId, parent_id: "", root_id: rootId, box: "nb-1", path: `/${rootId}.sy`, hpath: "/Root" },
+                { id: localChild, parent_id: rootId, root_id: localChild, box: "nb-1", path: `/${rootId}/${localChild}.sy`, hpath: "/Root/C1" },
+                { id: destOnlyId, parent_id: rootId, root_id: destOnlyId, box: "nb-1", path: `/${rootId}/${destOnlyId}.sy`, hpath: "/Root/C2" },
+            ];
+        });
+        api.getDocumentLocation.mockImplementation(async (docId: string) => ({ notebookId: "nb-1", path: `data/nb-1/${docId}.sy` }));
+        api.getBlockDOM.mockImplementation(async (docId: string) => `<div data-node-id="${docId}">Hello</div>`);
+        api.getBlockIdentityRows.mockImplementation(async (docId: string) => [
+            { id: docId, parent_id: "", root_id: docId, box: "nb-1", path: `/${docId}.sy`, hpath: `/${docId}`, type: "d", subtype: "", ial: "" },
+        ]);
+
+        const adapter = new DocumentScopeAdapter(
+            undefined,
+            remote,
+            [{ documentId: rootId, includeDescendants: true }],
+        );
+        await adapter.captureSource();
+        const destination = await adapter.captureDestination();
+
+        // Destination-only descendants must be visible to the planner even
+        // though they do not exist on the source end.
+        expect(destination.items.has(rootId)).toBe(true);
+        expect(destination.items.has(localChild)).toBe(true);
+        expect(destination.items.has(destOnlyId)).toBe(true);
+    });
+
+    it("propagates enumeration SQL failures instead of treating them as empty (E5)", async () => {
+        const rootId = "20260904120000-doc0001";
+        const remote = { url: "http://remote" };
+        api.readonlySql.mockRejectedValueOnce(new Error("kernel SQL unavailable"));
+
+        const adapter = new DocumentScopeAdapter(
+            undefined,
+            remote,
+            [{ documentId: rootId, includeDescendants: true }],
+        );
+        await expect(adapter.captureSource()).rejects.toThrow("kernel SQL unavailable");
+    });
 });

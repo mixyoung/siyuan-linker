@@ -169,8 +169,79 @@ describe("SyncExecutor", () => {
         expect(api.updateBlockDOM).toHaveBeenCalled();
     });
 
-    it("refuses execution when conflicts exist in plan", async () => {
-        await pairMirrorWorkspaces(undefined, remote);
+    it("writes each action to its direction's endpoint in a bidirectional plan (E2)", async () => {
+        const pairing = await pairMirrorWorkspaces(undefined, remote);
+        const pushDoc = "20260904120000-doc0001";
+        const pullDoc = "20260904120000-doc0002";
+        const pushSnap = mockDocSnapshot(pushDoc);
+        const pullSnap = mockDocSnapshot(pullDoc);
+
+        // Seed the local end with the pull target so the update phase finds it.
+        docs.set(`local:${pullDoc}`, {
+            dom: `<div data-node-id="${pullDoc}">Old</div>`,
+            attrs: { id: pullDoc },
+            notebookId: "nb-1",
+            path: `data/nb-1/${pullDoc}.sy`,
+        });
+
+        const plan: SyncPlan = {
+            profile: {
+                ...profile,
+                direction: "bidirectional",
+                localWorkspaceId: pairing.sourceIdentity.workspaceId,
+                remoteWorkspaceId: pairing.destinationIdentity.workspaceId,
+            },
+            effectiveSourceWorkspaceId: pairing.sourceIdentity.workspaceId,
+            effectiveDestinationWorkspaceId: pairing.destinationIdentity.workspaceId,
+            creates: [{
+                id: pushDoc,
+                type: "create",
+                objectType: "document",
+                objectId: pushDoc,
+                title: pushSnap.hpath,
+                logicalPath: `${pushDoc}.sy`,
+                direction: "push",
+                sourceSnapshot: pushSnap,
+            }],
+            updates: [{
+                id: pullDoc,
+                type: "update",
+                objectType: "document",
+                objectId: pullDoc,
+                title: pullSnap.hpath,
+                logicalPath: `${pullDoc}.sy`,
+                direction: "pull",
+                sourceSnapshot: pullSnap,
+                destinationSnapshot: undefined,
+            }],
+            moves: [],
+            deletes: [],
+            noops: [],
+            conflicts: [],
+            totalActions: 2,
+        };
+
+        const executor = new SyncExecutor();
+        const result = await executor.execute(plan, undefined, remote);
+        expect(result.success).toBe(true);
+
+        // The push create must land on the REMOTE end, the pull update on the
+        // LOCAL end — never both on a single collapsed endpoint.
+        expect(api.createDocWithMd).toHaveBeenCalledWith(
+            expect.objectContaining({ id: pushDoc, notebookId: "nb-1" }),
+            remote,
+        );
+        expect(docs.has(`remote:${pushDoc}`)).toBe(true);
+        expect(docs.has(`local:${pushDoc}`)).toBe(false);
+
+        const domCalls = api.updateBlockDOM.mock.calls.filter(([id]) => id === pullDoc);
+        expect(domCalls).toHaveLength(1);
+        expect(domCalls[0][2]).toBeUndefined(); // local endpoint
+        expect(docs.get(`local:${pullDoc}`)?.dom).toContain("Content");
+        expect(docs.get(`local:${pullDoc}`)?.dom).not.toContain("Old");
+    });
+
+    it("refuses execution when conflicts exist in plan", async () => {        await pairMirrorWorkspaces(undefined, remote);
         const plan: SyncPlan = {
             profile,
             effectiveSourceWorkspaceId: "s",

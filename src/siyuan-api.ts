@@ -493,6 +493,21 @@ export async function getBlockDOM(id: string, target?: TargetConnection): Promis
     return dom;
 }
 
+export async function moveDocById(id: string, toParentId: string, target?: TargetConnection): Promise<void> {
+    assertNodeId(id);
+    assertNodeId(toParentId, "parent document ID");
+    await requestJson("/api/filetree/moveDocsByID", {
+        fromIDs: [id],
+        toID: toParentId,
+    }, `Move document ${id} under ${toParentId}`, target);
+}
+
+export async function renameDocById(id: string, title: string, target?: TargetConnection): Promise<void> {
+    assertNodeId(id);
+    if (typeof title !== "string" || !title.trim()) throw new Error(`Rename document ${id}: title must be non-empty`);
+    await requestJson("/api/filetree/renameDocByID", { id, title }, `Rename document ${id}`, target);
+}
+
 export async function updateBlockDOM(id: string, dom: string, target?: TargetConnection): Promise<void> {
     assertNodeId(id);
     if (typeof dom !== "string" || !dom.trim()) throw new Error(`Update block DOM ${id}: DOM must be non-empty`);

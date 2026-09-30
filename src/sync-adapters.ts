@@ -1,5 +1,6 @@
 import {
     assertNodeId,
+    assertNotebookId,
     getDocumentLocation,
     listNotebooks,
     readonlySql,
@@ -35,8 +36,19 @@ export function buildLogicalPath(notebookId: string, rawPath: string): string {
     return p;
 }
 
-export function ancestorEntries(path: string): Array<{ documentId: string; path: string; parentId: string; depth: number }> {
-    const match = /^data\/([^/]+)\/(.+\.sy)$/.exec(path);
+// SQL block paths keep intermediate parents without the ".sy" suffix
+// ("/root/child.sy") while workspace paths carry it on every segment
+// ("root.sy/child.sy"). Normalize SQL paths to the workspace form so logical
+// comparisons use one canonical shape.
+export function sqlPathToLogical(sqlPath: string): string {
+    return sqlPath
+        .split("/")
+        .filter(Boolean)
+        .map((segment) => (segment.endsWith(".sy") ? segment : `${segment}.sy`))
+        .join("/");
+}
+
+export function ancestorEntries(path: string): Array<{ documentId: string; path: string; parentId: string; depth: number }> {    const match = /^data\/([^/]+)\/(.+\.sy)$/.exec(path);
     if (!match) {
         const clean = path.replace(/^\/+/, "");
         const segments = clean.split("/");
@@ -68,23 +80,23 @@ interface DocSqlRow {
     hpath: string;
 }
 
+// Enumerates the documents of one notebook on one endpoint. Errors MUST
+// propagate: swallowing them would present a real notebook as empty and,
+// under a propagating deletion policy, plan a mass delete (engine fix E5).
 async function fetchNotebookDocRows(notebookId: string, target?: TargetConnection): Promise<DocSqlRow[]> {
-    try {
-        const rows = await readonlySql(
-            `SELECT id, parent_id, root_id, box, path, hpath FROM blocks WHERE type = 'd' AND box = '${notebookId}'`,
-            target,
-        );
-        return rows.map((r) => ({
-            id: String(r.id),
-            parent_id: String(r.parent_id ?? ""),
-            root_id: String(r.root_id ?? ""),
-            box: String(r.box ?? ""),
-            path: String(r.path ?? ""),
-            hpath: String(r.hpath ?? ""),
-        }));
-    } catch {
-        return [];
-    }
+    const safeNotebookId = assertNotebookId(notebookId);
+    const rows = await readonlySql(
+        `SELECT id, parent_id, root_id, box, path, hpath FROM blocks WHERE type = 'd' AND box = '${safeNotebookId}'`,
+        target,
+    );
+    return rows.map((r) => ({
+        id: String(r.id),
+        parent_id: String(r.parent_id ?? ""),
+        root_id: String(r.root_id ?? ""),
+        box: String(r.box ?? ""),
+        path: String(r.path ?? ""),
+        hpath: String(r.hpath ?? ""),
+    }));
 }
 
 export function collectDescendantIds(rootDocId: string, rows: DocSqlRow[]): string[] {
@@ -110,6 +122,38 @@ export function collectDescendantIds(rootDocId: string, rows: DocSqlRow[]): stri
         }
     }
     return descendants;
+}
+
+async function captureRowsIntoSnapshot(
+    rows: DocSqlRow[],
+    notebookId: string,
+    target: TargetConnection | undefined,
+    items: Map<string, ScopeSnapshotItem>,
+    assets: Map<string, { path: string; sha256: string; content?: Blob }>,
+): Promise<void> {
+    for (const r of rows) {
+        // Capture failures propagate: a doc that cannot be read is an error,
+        // not an absent document (engine fix E5).
+        const snapshot = await captureDocumentSnapshot(r.id, target);
+        const logicalPath = buildLogicalPath(notebookId, snapshot.path);
+        const depth = snapshot.path.split("/").length - 2;
+
+        items.set(r.id, {
+            id: r.id,
+            objectType: "document",
+            notebookId,
+            path: snapshot.path,
+            logicalPath,
+            hpath: snapshot.hpath,
+            depth,
+            parentId: r.parent_id,
+            snapshot,
+        });
+
+        for (const asset of snapshot.assets) {
+            assets.set(asset.path, asset);
+        }
+    }
 }
 
 export class BaseScopeAdapter {
@@ -149,6 +193,9 @@ export class BaseScopeAdapter {
 }
 
 export class DocumentScopeAdapter extends BaseScopeAdapter implements SyncScopeAdapter {
+    private selectedDocIds = new Set<string>();
+    private selectedSubtrees: Array<{ logicalPath: string; includeDescendants: boolean }> = [];
+
     constructor(
         source: TargetConnection | undefined,
         destination: TargetConnection | undefined,
@@ -164,12 +211,13 @@ export class DocumentScopeAdapter extends BaseScopeAdapter implements SyncScopeA
         const items = new Map<string, ScopeSnapshotItem>();
         const assets = new Map<string, { path: string; sha256: string; content?: Blob }>();
 
-        const selectedDocIds = new Set<string>();
+        this.selectedDocIds = new Set<string>();
+        this.selectedSubtrees = [];
         const ancestorDocEntries = new Map<string, { documentId: string; path: string; parentId: string; depth: number }>();
 
         for (const root of this.documentRoots) {
             assertNodeId(root.documentId, "document root ID");
-            selectedDocIds.add(root.documentId);
+            this.selectedDocIds.add(root.documentId);
 
             const loc = await getDocumentLocation(root.documentId, this.source);
             for (const anc of ancestorEntries(loc.path)) {
@@ -177,17 +225,21 @@ export class DocumentScopeAdapter extends BaseScopeAdapter implements SyncScopeA
                     ancestorDocEntries.set(anc.documentId, anc);
                 }
             }
+            this.selectedSubtrees.push({
+                logicalPath: buildLogicalPath(loc.notebookId, loc.path),
+                includeDescendants: root.includeDescendants,
+            });
 
             if (root.includeDescendants) {
                 const rows = await fetchNotebookDocRows(loc.notebookId, this.source);
                 const descendantIds = collectDescendantIds(root.documentId, rows);
                 for (const descId of descendantIds) {
-                    selectedDocIds.add(descId);
+                    this.selectedDocIds.add(descId);
                 }
             }
         }
 
-        const allDocIdsToCapture = new Set<string>([...ancestorDocEntries.keys(), ...selectedDocIds]);
+        const allDocIdsToCapture = new Set<string>([...ancestorDocEntries.keys(), ...this.selectedDocIds]);
 
         for (const docId of allDocIdsToCapture) {
             const snapshot = await captureDocumentSnapshot(docId, this.source);
@@ -222,38 +274,59 @@ export class DocumentScopeAdapter extends BaseScopeAdapter implements SyncScopeA
         };
     }
 
+    // The destination snapshot must be enumerated INDEPENDENTLY of the source
+    // ID set: destination-only descendants (the pull direction) and genuinely
+    // absent documents must be distinguishable, and enumeration errors must
+    // surface instead of masquerading as "document missing" (engine fix E1).
     public async captureDestination(): Promise<ScopeSnapshot> {
         const identity = await readWorkspaceIdentity(this.destination);
         const notebooks = await listNotebooks(this.destination);
         const items = new Map<string, ScopeSnapshotItem>();
         const assets = new Map<string, { path: string; sha256: string; content?: Blob }>();
 
-        // Capture source first to know which document IDs to query in destination
-        const sourceSnapshot = await this.captureSource();
+        // Selection subtrees were recorded in logical (notebook-independent)
+        // form during captureSource; translate each through the mapping to
+        // the destination notebook and enumerate that notebook directly.
+        const requiredNotebooks = new Map<string, string>(); // source notebook -> destination notebook
+        for (const root of this.documentRoots) {
+            const loc = await getDocumentLocation(root.documentId, this.source);
+            requiredNotebooks.set(loc.notebookId, this.resolveDestinationNotebookId(loc.notebookId));
+        }
 
-        for (const [docId, sourceItem] of sourceSnapshot.items) {
-            try {
-                const snapshot = await captureDocumentSnapshot(docId, this.destination);
-                const logicalPath = this.buildLogicalPath(snapshot.notebookId, snapshot.path);
+        const includedIds = new Set<string>(this.selectedDocIds);
+        for (const [sourceNotebookId, destNotebookId] of requiredNotebooks) {
+            const rows = await fetchNotebookDocRows(destNotebookId, this.destination);
+            const rowsById = new Map(rows.map((row) => [row.id, row]));
+            const rowsByLogical = new Map(rows.map((row) => [sqlPathToLogical(row.path), row]));
 
-                items.set(docId, {
-                    id: docId,
-                    objectType: "document",
-                    notebookId: snapshot.notebookId,
-                    path: snapshot.path,
-                    logicalPath,
-                    hpath: snapshot.hpath,
-                    depth: sourceItem.depth,
-                    parentId: sourceItem.parentId,
-                    snapshot,
-                });
-
-                for (const asset of snapshot.assets) {
-                    assets.set(asset.path, asset);
+            for (const subtree of this.selectedSubtrees) {
+                const subtreeRoot = subtree.logicalPath;
+                const rootRow = rowsByLogical.get(subtreeRoot);
+                if (rootRow) includedIds.add(rootRow.id);
+                if (!subtree.includeDescendants) continue;
+                for (const [logical, row] of rowsByLogical) {
+                    if (logical === subtreeRoot || logical.startsWith(`${subtreeRoot}/`)) {
+                        includedIds.add(row.id);
+                    }
                 }
-            } catch {
-                // Document does not exist on destination
             }
+
+            // Ancestors of any included document must be captured as well so
+            // the planner can reason about the full tree shape.
+            for (const row of rows) {
+                if (!includedIds.has(row.id)) continue;
+                let walker = row.parent_id;
+                const guard = new Set<string>();
+                while (walker && !guard.has(walker)) {
+                    guard.add(walker);
+                    includedIds.add(walker);
+                    walker = rowsById.get(walker)?.parent_id ?? "";
+                }
+            }
+
+            const selectedRows = rows.filter((row) => includedIds.has(row.id));
+            await captureRowsIntoSnapshot(selectedRows, destNotebookId, this.destination, items, assets);
+            void sourceNotebookId;
         }
 
         return {
@@ -285,31 +358,7 @@ export class NotebookScopeAdapter extends BaseScopeAdapter implements SyncScopeA
 
         for (const nb of notebooks) {
             const rows = await fetchNotebookDocRows(nb.id, this.source);
-            for (const r of rows) {
-                try {
-                    const snapshot = await captureDocumentSnapshot(r.id, this.source);
-                    const logicalPath = this.buildLogicalPath(nb.id, snapshot.path);
-                    const depth = snapshot.path.split("/").length - 2;
-
-                    items.set(r.id, {
-                        id: r.id,
-                        objectType: "document",
-                        notebookId: nb.id,
-                        path: snapshot.path,
-                        logicalPath,
-                        hpath: snapshot.hpath,
-                        depth,
-                        parentId: r.parent_id,
-                        snapshot,
-                    });
-
-                    for (const asset of snapshot.assets) {
-                        assets.set(asset.path, asset);
-                    }
-                } catch {
-                    // Skip unreadable doc
-                }
-            }
+            await captureRowsIntoSnapshot(rows, nb.id, this.source, items, assets);
         }
 
         return {
@@ -331,31 +380,7 @@ export class NotebookScopeAdapter extends BaseScopeAdapter implements SyncScopeA
 
         for (const nb of notebooks) {
             const rows = await fetchNotebookDocRows(nb.id, this.destination);
-            for (const r of rows) {
-                try {
-                    const snapshot = await captureDocumentSnapshot(r.id, this.destination);
-                    const logicalPath = this.buildLogicalPath(nb.id, snapshot.path);
-                    const depth = snapshot.path.split("/").length - 2;
-
-                    items.set(r.id, {
-                        id: r.id,
-                        objectType: "document",
-                        notebookId: nb.id,
-                        path: snapshot.path,
-                        logicalPath,
-                        hpath: snapshot.hpath,
-                        depth,
-                        parentId: r.parent_id,
-                        snapshot,
-                    });
-
-                    for (const asset of snapshot.assets) {
-                        assets.set(asset.path, asset);
-                    }
-                } catch {
-                    // Skip unreadable doc
-                }
-            }
+            await captureRowsIntoSnapshot(rows, nb.id, this.destination, items, assets);
         }
 
         return {
@@ -377,31 +402,7 @@ export class WorkspaceScopeAdapter extends BaseScopeAdapter implements SyncScope
 
         for (const nb of notebooks) {
             const rows = await fetchNotebookDocRows(nb.id, this.source);
-            for (const r of rows) {
-                try {
-                    const snapshot = await captureDocumentSnapshot(r.id, this.source);
-                    const logicalPath = this.buildLogicalPath(nb.id, snapshot.path);
-                    const depth = snapshot.path.split("/").length - 2;
-
-                    items.set(r.id, {
-                        id: r.id,
-                        objectType: "document",
-                        notebookId: nb.id,
-                        path: snapshot.path,
-                        logicalPath,
-                        hpath: snapshot.hpath,
-                        depth,
-                        parentId: r.parent_id,
-                        snapshot,
-                    });
-
-                    for (const asset of snapshot.assets) {
-                        assets.set(asset.path, asset);
-                    }
-                } catch {
-                    // Skip unreadable doc
-                }
-            }
+            await captureRowsIntoSnapshot(rows, nb.id, this.source, items, assets);
         }
 
         return {
@@ -421,31 +422,7 @@ export class WorkspaceScopeAdapter extends BaseScopeAdapter implements SyncScope
 
         for (const nb of notebooks) {
             const rows = await fetchNotebookDocRows(nb.id, this.destination);
-            for (const r of rows) {
-                try {
-                    const snapshot = await captureDocumentSnapshot(r.id, this.destination);
-                    const logicalPath = this.buildLogicalPath(nb.id, snapshot.path);
-                    const depth = snapshot.path.split("/").length - 2;
-
-                    items.set(r.id, {
-                        id: r.id,
-                        objectType: "document",
-                        notebookId: nb.id,
-                        path: snapshot.path,
-                        logicalPath,
-                        hpath: snapshot.hpath,
-                        depth,
-                        parentId: r.parent_id,
-                        snapshot,
-                    });
-
-                    for (const asset of snapshot.assets) {
-                        assets.set(asset.path, asset);
-                    }
-                } catch {
-                    // Skip unreadable doc
-                }
-            }
+            await captureRowsIntoSnapshot(rows, nb.id, this.destination, items, assets);
         }
 
         return {

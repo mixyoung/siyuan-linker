@@ -3,6 +3,7 @@ import type {
 } from "./mirror-types";
 import type {
     ScopeSnapshot,
+    ScopeSnapshotItem,
     SyncAction,
     SyncConflict,
     SyncPlan,
@@ -10,6 +11,12 @@ import type {
 } from "./sync-types";
 
 export interface PlannerOptions {
+    /**
+     * Per-document manual conflict decisions. Values follow the DESIGN's
+     * local/remote semantics: "source-wins" keeps the LOCAL end's content,
+     * "destination-wins" keeps the REMOTE end's content, "skip" leaves the
+     * object unresolved without advancing its baseline.
+     */
     manualResolutions?: Record<string, "skip" | "source-wins" | "destination-wins">;
 }
 
@@ -61,6 +68,23 @@ export function sortActionsByDependency(actions: SyncAction[]): SyncAction[] {
     return [...notebookCreates, ...docCreates, ...moves, ...updates, ...deletes, ...noops];
 }
 
+// Baselines since v5 store the notebook-independent logical path; older
+// baselines derive it by stripping the physical notebook prefix.
+function baselineLogicalPath(baseline: MirrorDocumentBaseline): string {
+    return baseline.logicalPath ?? baseline.path.split("/").slice(2).join("/");
+}
+
+// Items built by older callers may omit the denormalized hpath; the snapshot
+// always carries it.
+function itemHpath(item: ScopeSnapshotItem | undefined): string {
+    return item?.hpath ?? item?.snapshot?.hpath ?? "";
+}
+
+function hpathTitle(hpath: string): string {
+    const segments = hpath.split("/").filter(Boolean);
+    return segments[segments.length - 1] ?? "";
+}
+
 export class SyncPlanner {
     public generatePlan(
         profile: SyncProfile,
@@ -69,6 +93,23 @@ export class SyncPlanner {
         baselines: Record<string, MirrorDocumentBaseline> = {},
         options: PlannerOptions = {},
     ): SyncPlan {
+        // Adapter contract: sourceSnapshot is captured on the LOCAL end and
+        // destinationSnapshot on the REMOTE end, regardless of direction.
+        const localItems = sourceSnapshot.items;
+        const remoteItems = destinationSnapshot.items;
+
+        // Design §7.2: direction-source is meaningless for bidirectional
+        // tasks and must be rejected instead of guessed.
+        if (profile.direction === "bidirectional" && profile.conflictAuthority === "direction-source") {
+            throw new Error("Bidirectional sync cannot use conflictAuthority=direction-source; choose local or remote");
+        }
+
+        const isPush = profile.direction === "push";
+        const isPull = profile.direction === "pull";
+        const isBidirectional = profile.direction === "bidirectional";
+        // The effective source end is remote for pulls; local otherwise.
+        const effectiveSourceIsRemote = isPull;
+
         const creates: SyncAction[] = [];
         const updates: SyncAction[] = [];
         const moves: SyncAction[] = [];
@@ -76,215 +117,166 @@ export class SyncPlanner {
         const noops: SyncAction[] = [];
         const conflicts: SyncConflict[] = [];
 
-        const isPush = profile.direction === "push";
-        const isPull = profile.direction === "pull";
-        const isBidirectional = profile.direction === "bidirectional";
-
-        const effectiveSourceWorkspaceId = isPull ? profile.remoteWorkspaceId : profile.localWorkspaceId;
-        const effectiveDestinationWorkspaceId = isPull ? profile.localWorkspaceId : profile.remoteWorkspaceId;
-
-        // Collect all document IDs from both snapshots and baselines
         const allDocIds = new Set<string>([
-            ...sourceSnapshot.items.keys(),
-            ...destinationSnapshot.items.keys(),
+            ...localItems.keys(),
+            ...remoteItems.keys(),
             ...Object.keys(baselines),
         ]);
 
         for (const docId of allDocIds) {
-            const sourceItem = sourceSnapshot.items.get(docId);
-            const destItem = destinationSnapshot.items.get(docId);
+            const localItem = localItems.get(docId);
+            const remoteItem = remoteItems.get(docId);
             const baseline = baselines[docId];
 
-            if (sourceItem && destItem) {
-                // Both sides have the document
-                const sourceFingerprint = sourceItem.snapshot?.baseline.fingerprint;
-                const destFingerprint = destItem.snapshot?.baseline.fingerprint;
+            if (localItem && remoteItem) {
+                const localFingerprint = localItem.snapshot?.baseline.fingerprint;
+                const remoteFingerprint = remoteItem.snapshot?.baseline.fingerprint;
 
                 if (!baseline) {
-                    // No baseline exists
-                    if (sourceFingerprint === destFingerprint) {
-                        noops.push({
-                            id: docId,
-                            type: "noop",
-                            objectType: "document",
-                            objectId: docId,
-                            title: sourceItem.hpath,
-                            logicalPath: sourceItem.logicalPath,
-                            direction: isPull ? "pull" : "push",
-                            reason: "converged-no-baseline",
-                            baseline: destItem.snapshot?.baseline,
-                        });
+                    if (localFingerprint === remoteFingerprint
+                        && localItem.logicalPath === remoteItem.logicalPath
+                        && itemHpath(localItem) === itemHpath(remoteItem)) {
+                        noops.push(this.buildNoop(docId, localItem, remoteItem, "converged-no-baseline"));
                     } else {
+                        // Without a baseline a path divergence cannot be
+                        // classified as a move; stay conservative (engine fix E3).
                         conflicts.push({
                             objectId: docId,
                             objectType: "document",
-                            logicalPath: sourceItem.logicalPath,
-                            title: sourceItem.hpath,
+                            logicalPath: localItem.logicalPath,
+                            title: itemHpath(localItem),
                             classification: "conflict",
-                            sourceFingerprint,
-                            destinationFingerprint: destFingerprint,
-                            reasons: ["目标端该文档已存在且内容与源端不一致，且当前没有同步基线"],
+                            sourceFingerprint: localFingerprint,
+                            destinationFingerprint: remoteFingerprint,
+                            reasons: ["目标端该文档已存在且内容或位置与源端不一致，且当前没有同步基线"],
                         });
                     }
                     continue;
                 }
 
-                // Baseline exists
-                const sourceChanged = sourceFingerprint !== baseline.fingerprint;
-                const destChanged = destFingerprint !== baseline.fingerprint;
+                const localChanged = localFingerprint !== baseline.fingerprint;
+                const remoteChanged = remoteFingerprint !== baseline.fingerprint;
+                const baselineLogical = baselineLogicalPath(baseline);
+                const localMoved = localItem.logicalPath !== baselineLogical || itemHpath(localItem) !== baseline.hpath;
+                const remoteMoved = remoteItem.logicalPath !== baselineLogical || itemHpath(remoteItem) !== baseline.hpath;
 
-                if (!sourceChanged && !destChanged) {
-                    if (sourceItem.logicalPath !== destItem.logicalPath || sourceItem.hpath !== destItem.hpath) {
-                        moves.push({
-                            id: docId,
-                            type: "move",
-                            objectType: "document",
-                            objectId: docId,
-                            title: sourceItem.hpath,
-                            logicalPath: sourceItem.logicalPath,
-                            sourcePath: sourceItem.path,
-                            destinationPath: destItem.path,
-                            direction: isPull ? "pull" : "push",
-                            sourceSnapshot: sourceItem.snapshot,
-                            destinationSnapshot: destItem.snapshot,
-                            baseline,
-                        });
+                if (localMoved && remoteMoved) {
+                    if (localItem.logicalPath === remoteItem.logicalPath && itemHpath(localItem) === itemHpath(remoteItem)) {
+                        // Converged move: apply an idempotent move so the
+                        // committed baseline records the new location.
+                        moves.push(this.buildMove(docId, localItem, remoteItem, baseline, "push"));
                     } else {
-                        noops.push({
-                            id: docId,
-                            type: "noop",
-                            objectType: "document",
-                            objectId: docId,
-                            title: sourceItem.hpath,
-                            logicalPath: sourceItem.logicalPath,
-                            direction: isPull ? "pull" : "push",
-                            reason: "unchanged",
-                            baseline,
-                        });
-                    }
-                } else if (sourceChanged && !destChanged) {
-                    // Only source changed
-                    if (isPush || isBidirectional) {
-                        updates.push({
-                            id: docId,
-                            type: "update",
-                            objectType: "document",
-                            objectId: docId,
-                            title: sourceItem.hpath,
-                            logicalPath: sourceItem.logicalPath,
-                            sourcePath: sourceItem.path,
-                            destinationPath: destItem.path,
-                            direction: "push",
-                            sourceSnapshot: sourceItem.snapshot,
-                            destinationSnapshot: destItem.snapshot,
-                            baseline,
-                        });
-                    } else if (isPull) {
-                        // In pull mode, source is remote. If remote didn't change (dest did relative to baseline)
-                        // This branch means local (sourceItem here) changed
                         conflicts.push({
                             objectId: docId,
                             objectType: "document",
-                            logicalPath: sourceItem.logicalPath,
-                            title: sourceItem.hpath,
+                            logicalPath: localItem.logicalPath,
+                            title: itemHpath(localItem),
+                            classification: "diverged",
+                            sourceFingerprint: localFingerprint,
+                            destinationFingerprint: remoteFingerprint,
+                            baselineFingerprint: baseline.fingerprint,
+                            reasons: ["两端把同一文档移动到了不同位置，产生分叉"],
+                        });
+                    }
+                    continue;
+                }
+
+                if (localMoved || remoteMoved) {
+                    const movedOnRemote = remoteMoved;
+                    if (isBidirectional || (movedOnRemote && isPull) || (!movedOnRemote && isPush)) {
+                        // The moving end is the content side for this
+                        // direction; propagate its new location to the other
+                        // end (engine fix E3: judged against the baseline, and
+                        // the executor performs a real move).
+                        moves.push(this.buildMove(docId, localItem, remoteItem, baseline, movedOnRemote ? "pull" : "push"));
+                    } else {
+                        conflicts.push({
+                            objectId: docId,
+                            objectType: "document",
+                            logicalPath: localItem.logicalPath,
+                            title: itemHpath(localItem),
+                            classification: "conflict",
+                            sourceFingerprint: localFingerprint,
+                            destinationFingerprint: remoteFingerprint,
+                            baselineFingerprint: baseline.fingerprint,
+                            reasons: [isPull ? "拉取模式下本地端发生了独立的移动" : "推送模式下目标端发生了独立的移动"],
+                        });
+                    }
+                    continue;
+                }
+
+                if (!localChanged && !remoteChanged) {
+                    noops.push(this.buildNoop(docId, localItem, remoteItem, "unchanged"));
+                } else if (localChanged && !remoteChanged) {
+                    if (isPush || isBidirectional) {
+                        updates.push(this.buildUpdate(docId, localItem, remoteItem, baseline, "push"));
+                    } else {
+                        conflicts.push({
+                            objectId: docId,
+                            objectType: "document",
+                            logicalPath: localItem.logicalPath,
+                            title: itemHpath(localItem),
                             classification: "destination-changed",
-                            sourceFingerprint,
-                            destinationFingerprint: destFingerprint,
+                            sourceFingerprint: localFingerprint,
+                            destinationFingerprint: remoteFingerprint,
                             baselineFingerprint: baseline.fingerprint,
                             reasons: ["拉取模式下本地发生了独立变更"],
                         });
                     }
-                } else if (!sourceChanged && destChanged) {
-                    // Only destination changed
-                    if (isPush) {
+                } else if (!localChanged && remoteChanged) {
+                    if (isPull || isBidirectional) {
+                        updates.push(this.buildUpdate(docId, localItem, remoteItem, baseline, "pull"));
+                    } else {
                         conflicts.push({
                             objectId: docId,
                             objectType: "document",
-                            logicalPath: destItem.logicalPath,
-                            title: destItem.hpath,
+                            logicalPath: localItem.logicalPath,
+                            title: itemHpath(localItem),
                             classification: "destination-changed",
-                            sourceFingerprint,
-                            destinationFingerprint: destFingerprint,
+                            sourceFingerprint: localFingerprint,
+                            destinationFingerprint: remoteFingerprint,
                             baselineFingerprint: baseline.fingerprint,
                             reasons: ["目标端发生了独立变更，安全推送模式默认阻止覆盖"],
                         });
-                    } else if (isPull || isBidirectional) {
-                        updates.push({
-                            id: docId,
-                            type: "update",
-                            objectType: "document",
-                            objectId: docId,
-                            title: destItem.hpath,
-                            logicalPath: destItem.logicalPath,
-                            sourcePath: destItem.path,
-                            destinationPath: sourceItem.path,
-                            direction: "pull",
-                            sourceSnapshot: destItem.snapshot,
-                            destinationSnapshot: sourceItem.snapshot,
-                            baseline,
-                        });
                     }
                 } else {
-                    // Both changed!
-                    if (sourceFingerprint === destFingerprint) {
-                        // Converged!
-                        noops.push({
-                            id: docId,
-                            type: "noop",
-                            objectType: "document",
-                            objectId: docId,
-                            title: sourceItem.hpath,
-                            logicalPath: sourceItem.logicalPath,
-                            direction: "push",
-                            reason: "converged",
-                            baseline: destItem.snapshot?.baseline,
-                        });
+                    if (localFingerprint === remoteFingerprint) {
+                        noops.push(this.buildNoop(docId, localItem, remoteItem, "converged"));
                     } else {
-                        // Diverged
                         conflicts.push({
                             objectId: docId,
                             objectType: "document",
-                            logicalPath: sourceItem.logicalPath,
-                            title: sourceItem.hpath,
+                            logicalPath: localItem.logicalPath,
+                            title: itemHpath(localItem),
                             classification: "conflict",
-                            sourceFingerprint,
-                            destinationFingerprint: destFingerprint,
+                            sourceFingerprint: localFingerprint,
+                            destinationFingerprint: remoteFingerprint,
                             baselineFingerprint: baseline.fingerprint,
                             reasons: ["两端同时发生了不同修改，产生冲突分叉"],
                         });
                     }
                 }
-            } else if (sourceItem && !destItem) {
-                // Source has document, destination missing
+            } else if (localItem && !remoteItem) {
                 if (!baseline) {
-                    // Brand new document on source -> create on destination
-                    creates.push({
-                        id: docId,
-                        type: "create",
-                        objectType: "document",
-                        objectId: docId,
-                        title: sourceItem.hpath,
-                        logicalPath: sourceItem.logicalPath,
-                        direction: isPull ? "pull" : "push",
-                        sourceSnapshot: sourceItem.snapshot,
-                    });
+                    if (isPush || isBidirectional) {
+                        creates.push(this.buildCreate(docId, localItem, "push"));
+                    } else {
+                        noops.push(this.buildNoop(docId, localItem, undefined, "remote-only-under-pull"));
+                    }
                 } else {
-                    // Document existed before in baseline, but destination deleted it
-                    const sourceChanged = sourceItem.snapshot?.baseline.fingerprint !== baseline.fingerprint;
-                    if (sourceChanged) {
-                        // One side deleted, other side modified -> conflict
+                    const localChanged = localItem.snapshot?.baseline.fingerprint !== baseline.fingerprint;
+                    if (localChanged) {
                         conflicts.push({
                             objectId: docId,
                             objectType: "document",
-                            logicalPath: sourceItem.logicalPath,
-                            title: sourceItem.hpath,
+                            logicalPath: localItem.logicalPath,
+                            title: itemHpath(localItem),
                             classification: "delete-modify",
-                            sourceFingerprint: sourceItem.snapshot?.baseline.fingerprint,
+                            sourceFingerprint: localItem.snapshot?.baseline.fingerprint,
                             baselineFingerprint: baseline.fingerprint,
                             reasons: ["目标端删除了该文档，但源端进行了修改"],
                         });
                     } else {
-                        // Single-side deletion on destination
                         if (isBidirectional) {
                             if (profile.deletionPolicy === "mirror-delete" || profile.deletionPolicy === "archive-and-delete") {
                                 deletes.push({
@@ -292,83 +284,41 @@ export class SyncPlanner {
                                     type: "delete",
                                     objectType: "document",
                                     objectId: docId,
-                                    title: sourceItem.hpath,
-                                    logicalPath: sourceItem.logicalPath,
+                                    title: itemHpath(localItem),
+                                    logicalPath: localItem.logicalPath,
                                     direction: "pull",
-                                    sourceSnapshot: sourceItem.snapshot,
+                                    destinationSnapshot: localItem.snapshot,
                                     baseline,
                                 });
                             } else {
-                                noops.push({
-                                    id: docId,
-                                    type: "noop",
-                                    objectType: "document",
-                                    objectId: docId,
-                                    logicalPath: sourceItem.logicalPath,
-                                    direction: "push",
-                                    reason: "deletion-ignored",
-                                    baseline,
-                                });
+                                noops.push(this.buildNoop(docId, localItem, undefined, "deletion-ignored"));
                             }
-                        } else {
-                            // In push mode, source still has it; push it back
-                            creates.push({
-                                id: docId,
-                                type: "create",
-                                objectType: "document",
-                                objectId: docId,
-                                title: sourceItem.hpath,
-                                logicalPath: sourceItem.logicalPath,
-                                direction: "push",
-                                sourceSnapshot: sourceItem.snapshot,
-                            });
+                        } else if (isPush) {
+                            creates.push(this.buildCreate(docId, localItem, "push"));
                         }
                     }
                 }
-            } else if (!sourceItem && destItem) {
-                // Destination has document, source missing
+            } else if (!localItem && remoteItem) {
                 if (!baseline) {
-                    // New document on destination
-                    if (isBidirectional || isPull) {
-                        creates.push({
-                            id: docId,
-                            type: "create",
-                            objectType: "document",
-                            objectId: docId,
-                            title: destItem.hpath,
-                            logicalPath: destItem.logicalPath,
-                            direction: "pull",
-                            sourceSnapshot: destItem.snapshot,
-                        });
+                    if (isPull || isBidirectional) {
+                        creates.push(this.buildCreate(docId, remoteItem, "pull"));
                     } else {
-                        // In push mode, destination has extra document
-                        noops.push({
-                            id: docId,
-                            type: "noop",
-                            objectType: "document",
-                            objectId: docId,
-                            logicalPath: destItem.logicalPath,
-                            direction: "push",
-                            reason: "destination-only",
-                        });
+                        noops.push(this.buildNoop(docId, undefined, remoteItem, "local-only-under-push"));
                     }
                 } else {
-                    // Document was in baseline, but deleted on source
-                    const destChanged = destItem.snapshot?.baseline.fingerprint !== baseline.fingerprint;
-                    if (destChanged) {
-                        // Source deleted, destination modified -> conflict
+                    const remoteChanged = remoteItem.snapshot?.baseline.fingerprint !== baseline.fingerprint;
+                    if (remoteChanged) {
                         conflicts.push({
                             objectId: docId,
                             objectType: "document",
-                            logicalPath: destItem.logicalPath,
-                            title: destItem.hpath,
+                            logicalPath: remoteItem.logicalPath,
+                            title: itemHpath(remoteItem),
                             classification: "modify-delete",
-                            destinationFingerprint: destItem.snapshot?.baseline.fingerprint,
+                            destinationFingerprint: remoteItem.snapshot?.baseline.fingerprint,
                             baselineFingerprint: baseline.fingerprint,
                             reasons: ["源端删除了该文档，但目标端进行了修改"],
                         });
                     } else {
-                        // Single-side deletion on source
                         if (isPush || isBidirectional) {
                             if (profile.deletionPolicy === "mirror-delete" || profile.deletionPolicy === "archive-and-delete") {
                                 deletes.push({
@@ -376,23 +326,14 @@ export class SyncPlanner {
                                     type: "delete",
                                     objectType: "document",
                                     objectId: docId,
-                                    title: destItem.hpath,
-                                    logicalPath: destItem.logicalPath,
+                                    title: itemHpath(remoteItem),
+                                    logicalPath: remoteItem.logicalPath,
                                     direction: "push",
-                                    destinationSnapshot: destItem.snapshot,
+                                    destinationSnapshot: remoteItem.snapshot,
                                     baseline,
                                 });
                             } else {
-                                noops.push({
-                                    id: docId,
-                                    type: "noop",
-                                    objectType: "document",
-                                    objectId: docId,
-                                    logicalPath: destItem.logicalPath,
-                                    direction: "push",
-                                    reason: "deletion-ignored",
-                                    baseline,
-                                });
+                                noops.push(this.buildNoop(docId, undefined, remoteItem, "deletion-ignored"));
                             }
                         }
                     }
@@ -400,87 +341,47 @@ export class SyncPlanner {
             }
         }
 
-        // Apply conflict policy resolutions if configured
+        // Conflict resolution precedence (engine fix E4):
+        //   explicit manual decision > conflictPolicy > unresolved.
+        // A manual "skip" is final: the object stays unresolved, produces no
+        // action, and must NOT be overridden by an authority-wins policy.
         const remainingConflicts: SyncConflict[] = [];
         for (const conflict of conflicts) {
-            const manualChoice = options.manualResolutions?.[conflict.objectId];
-            if (manualChoice) {
-                conflict.resolution = manualChoice;
-                if (manualChoice === "source-wins") {
-                    const sourceItem = sourceSnapshot.items.get(conflict.objectId);
-                    const destItem = destinationSnapshot.items.get(conflict.objectId);
-                    if (sourceItem) {
-                        updates.push({
-                            id: conflict.objectId,
-                            type: destItem ? "update" : "create",
-                            objectType: conflict.objectType,
-                            objectId: conflict.objectId,
-                            title: sourceItem.hpath,
-                            logicalPath: sourceItem.logicalPath,
-                            direction: "push",
-                            sourceSnapshot: sourceItem.snapshot,
-                            destinationSnapshot: destItem?.snapshot,
-                        });
-                    }
-                    continue;
-                } else if (manualChoice === "destination-wins") {
-                    const sourceItem = sourceSnapshot.items.get(conflict.objectId);
-                    const destItem = destinationSnapshot.items.get(conflict.objectId);
-                    if (destItem) {
-                        updates.push({
-                            id: conflict.objectId,
-                            type: sourceItem ? "update" : "create",
-                            objectType: conflict.objectType,
-                            objectId: conflict.objectId,
-                            title: destItem.hpath,
-                            logicalPath: destItem.logicalPath,
-                            direction: "pull",
-                            sourceSnapshot: destItem.snapshot,
-                            destinationSnapshot: sourceItem?.snapshot,
-                        });
-                    }
-                    continue;
-                }
+            const manual = options.manualResolutions?.[conflict.objectId];
+
+            if (manual === "skip") {
+                conflict.resolution = "skip";
+                continue;
             }
 
-            if (profile.conflictPolicy === "authority-wins") {
-                const authority = profile.conflictAuthority ?? (isPull ? "remote" : "local");
-                const sourceWins = authority === "local" || authority === "direction-source";
-                conflict.resolution = sourceWins ? "source-wins" : "destination-wins";
-
-                const sourceItem = sourceSnapshot.items.get(conflict.objectId);
-                const destItem = destinationSnapshot.items.get(conflict.objectId);
-
-                if (sourceWins && sourceItem) {
-                    updates.push({
-                        id: conflict.objectId,
-                        type: destItem ? "update" : "create",
-                        objectType: conflict.objectType,
-                        objectId: conflict.objectId,
-                        title: sourceItem.hpath,
-                        logicalPath: sourceItem.logicalPath,
-                        direction: "push",
-                        sourceSnapshot: sourceItem.snapshot,
-                        destinationSnapshot: destItem?.snapshot,
-                    });
-                    continue;
-                } else if (!sourceWins && destItem) {
-                    updates.push({
-                        id: conflict.objectId,
-                        type: sourceItem ? "update" : "create",
-                        objectType: conflict.objectType,
-                        objectId: conflict.objectId,
-                        title: destItem.hpath,
-                        logicalPath: destItem.logicalPath,
-                        direction: "pull",
-                        sourceSnapshot: destItem.snapshot,
-                        destinationSnapshot: sourceItem?.snapshot,
-                    });
-                    continue;
-                }
+            let winner: "local" | "remote" | undefined;
+            if (manual === "source-wins") {
+                winner = "local";
+            } else if (manual === "destination-wins") {
+                winner = "remote";
+            } else if (profile.conflictPolicy === "authority-wins") {
+                const authority = profile.conflictAuthority ?? "direction-source";
+                if (authority === "local") winner = "local";
+                else if (authority === "remote") winner = "remote";
+                // direction-source resolves to the EFFECTIVE source end:
+                // remote under pull, local under push/bidirectional (the
+                // bidirectional combination was rejected above).
+                else winner = effectiveSourceIsRemote ? "remote" : "local";
             }
 
-            remainingConflicts.push(conflict);
+            if (!winner) {
+                remainingConflicts.push(conflict);
+                continue;
+            }
+
+            conflict.resolution = winner === "local" ? "source-wins" : "destination-wins";
+            const localItem = localItems.get(conflict.objectId);
+            const remoteItem = remoteItems.get(conflict.objectId);
+            if (winner === "local" && localItem) {
+                updates.push(this.buildUpdate(conflict.objectId, localItem, remoteItem, baselines[conflict.objectId], "push"));
+            } else if (winner === "remote" && remoteItem) {
+                updates.push(this.buildUpdate(conflict.objectId, localItem, remoteItem, baselines[conflict.objectId], "pull"));
+            }
         }
 
         const sortedCreates = sortActionsByDependency(creates);
@@ -493,8 +394,12 @@ export class SyncPlanner {
 
         return {
             profile,
-            effectiveSourceWorkspaceId,
-            effectiveDestinationWorkspaceId,
+            effectiveSourceWorkspaceId: effectiveSourceIsRemote
+                ? profile.remoteWorkspaceId
+                : profile.localWorkspaceId,
+            effectiveDestinationWorkspaceId: effectiveSourceIsRemote
+                ? profile.localWorkspaceId
+                : profile.remoteWorkspaceId,
             creates: sortedCreates,
             updates: sortedUpdates,
             moves: sortedMoves,
@@ -504,4 +409,71 @@ export class SyncPlanner {
             totalActions,
         };
     }
+
+    private buildNoop(docId: string, localItem: ScopeSnapshotItem | undefined, remoteItem: ScopeSnapshotItem | undefined, reason: string): SyncAction {
+        return {
+            id: docId,
+            type: "noop",
+            objectType: "document",
+            objectId: docId,
+            title: itemHpath(localItem ?? remoteItem),
+            logicalPath: (localItem ?? remoteItem)?.logicalPath ?? "",
+            direction: "push",
+            reason,
+            sourceSnapshot: localItem?.snapshot,
+            destinationSnapshot: remoteItem?.snapshot,
+            baseline: undefined,
+        };
+    }
+
+    private buildCreate(docId: string, contentItem: ScopeSnapshotItem, direction: "push" | "pull"): SyncAction {
+        return {
+            id: docId,
+            type: "create",
+            objectType: "document",
+            objectId: docId,
+            title: itemHpath(contentItem),
+            logicalPath: contentItem.logicalPath,
+            direction,
+            sourceSnapshot: contentItem.snapshot,
+        };
+    }
+
+    private buildUpdate(docId: string, localItem: ScopeSnapshotItem, remoteItem: ScopeSnapshotItem | undefined, baseline: MirrorDocumentBaseline | undefined, direction: "push" | "pull"): SyncAction {
+        const contentItem = direction === "pull" ? remoteItem : localItem;
+        const targetItem = direction === "pull" ? localItem : remoteItem;
+        return {
+            id: docId,
+            type: "update",
+            objectType: "document",
+            objectId: docId,
+            title: itemHpath(contentItem),
+            logicalPath: contentItem?.logicalPath ?? "",
+            sourceSnapshot: contentItem?.snapshot,
+            destinationSnapshot: targetItem?.snapshot,
+            baseline,
+            direction,
+        };
+    }
+
+    private buildMove(docId: string, localItem: ScopeSnapshotItem, remoteItem: ScopeSnapshotItem, baseline: MirrorDocumentBaseline, direction: "push" | "pull"): SyncAction {
+        const contentItem = direction === "pull" ? remoteItem : localItem;
+        const targetItem = direction === "pull" ? localItem : remoteItem;
+        return {
+            id: docId,
+            type: "move",
+            objectType: "document",
+            objectId: docId,
+            title: itemHpath(contentItem),
+            logicalPath: contentItem.logicalPath,
+            sourcePath: contentItem.path,
+            destinationPath: targetItem.path,
+            sourceSnapshot: contentItem.snapshot,
+            destinationSnapshot: targetItem.snapshot,
+            baseline,
+            direction,
+        };
+    }
 }
+
+export { hpathTitle };

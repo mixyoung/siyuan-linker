@@ -130,7 +130,9 @@ describe("end-to-end sync flow", () => {
             hpath: `/${docId}`,
             dom: `<div data-node-id="${docId}">Hello</div>`,
             attrs: { id: docId },
-            managedAttrs: { id: docId },
+            // `id` is a kernel-managed structural attribute that real captures
+            // always strip, so the content side must not carry it either.
+            managedAttrs: { "custom-key": "e2e" },
             identityRows: [{ id: docId, parent_id: "", root_id: docId, box: "nb-1", path: `/${docId}.sy`, hpath: `/${docId}`, type: "d", subtype: "", ial: "" }],
             blockIds: [docId],
             assets: [],
